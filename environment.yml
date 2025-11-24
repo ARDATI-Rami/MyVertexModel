@@ -1,0 +1,11 @@
+name: myvertexmodel
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - shapely
+  - scipy
+  - matplotlib
+  - dill
+  - pip
