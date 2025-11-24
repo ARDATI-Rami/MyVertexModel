@@ -8,4 +8,5 @@ dependencies:
   - scipy
   - matplotlib
   - dill
+  - pytest  # added for running test suite
   - pip
