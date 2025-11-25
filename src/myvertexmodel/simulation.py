@@ -125,7 +125,7 @@ class Simulation:
             - ε (epsilon) and damping are user-configurable via Simulation constructor.
             - Does NOT handle topological changes (T1 transitions, division, etc.).
         """
-        # Validate before computing energy if requested
+        # Validate before updates if requested to catch pre-existing invalid states
         if self.validate_each_step:
             self.tissue.validate()
 
@@ -144,6 +144,10 @@ class Simulation:
 
         # Advance time after position updates
         self.time += self.dt
+
+        # Validate after position updates if requested
+        if self.validate_each_step:
+            self.tissue.validate()
 
     def run(self, n_steps: int = 100):
         """

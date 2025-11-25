@@ -907,5 +907,138 @@ def test_analytic_gradient_future_interface():
         pass
 
 
+def test_geometry_is_valid_polygon_square_and_degenerate():
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    assert GeometryCalculator.is_valid_polygon(square)
+
+    # Degenerate: repeated vertices
+    degenerate = np.array([[0, 0], [1, 0], [1, 0], [0, 1]], dtype=float)
+    assert not GeometryCalculator.is_valid_polygon(degenerate)
+
+
+def test_geometry_signed_area_orientation_square():
+    # CCW square
+    ccw_square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    assert GeometryCalculator.signed_area(ccw_square) > 0
+
+    # CW square (reverse order)
+    cw_square = ccw_square[::-1]
+    assert GeometryCalculator.signed_area(cw_square) < 0
+
+
+def test_geometry_ensure_ccw_makes_ccw():
+    # Start with CW ordering
+    cw_square = np.array([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=float)
+    assert GeometryCalculator.signed_area(cw_square) < 0
+
+    ccw_square = GeometryCalculator.ensure_ccw(cw_square)
+    assert GeometryCalculator.signed_area(ccw_square) > 0
+    # Should be reversed copy
+    assert np.allclose(ccw_square, cw_square[::-1])
+    # Input unchanged
+    assert GeometryCalculator.signed_area(cw_square) < 0
+
+
+def test_energy_translation_invariance():
+    """Energy should be invariant under translations (rigid motion)."""
+    from myvertexmodel import Cell, EnergyParameters, cell_energy, GeometryCalculator
+    import numpy as np
+
+    # Unit square at origin
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+
+    params = EnergyParameters()
+    geometry = GeometryCalculator()
+
+    # Energy before translation
+    e_before = cell_energy(cell, params, geometry)
+
+    # Translate by arbitrary vector
+    t = np.array([5.0, -3.0], dtype=float)
+    translated = square + t
+
+    # Update cell vertices and recompute energy
+    cell.vertices = translated
+    e_after = cell_energy(cell, params, geometry)
+
+    # Energies should be identical within numerical tolerance
+    assert np.isclose(e_before, e_after, rtol=1e-12, atol=1e-12)
+
+
+def test_energy_rotation_invariance_90deg():
+    """Energy should be invariant under 90-degree rotation around the origin."""
+    from myvertexmodel import Cell, EnergyParameters, cell_energy, GeometryCalculator
+    import numpy as np
+
+    # Unit square at origin
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+
+    params = EnergyParameters()
+    geometry = GeometryCalculator()
+
+    # Energy before rotation
+    e_before = cell_energy(cell, params, geometry)
+
+    # 90-degree rotation matrix (counterclockwise)
+    R = np.array([[0.0, -1.0], [1.0, 0.0]], dtype=float)
+    rotated = square @ R.T
+
+    # Update cell vertices and recompute energy
+    cell.vertices = rotated
+    e_after = cell_energy(cell, params, geometry)
+
+    # Energies should be identical within numerical tolerance
+    assert np.isclose(e_before, e_after, rtol=1e-12, atol=1e-12)
+
+
+def test_global_vertex_pool_with_build_grid_tissue_sharing():
+    """Using build_grid_tissue(2x1), global vertex pool should share boundary vertices."""
+    from myvertexmodel.__main__ import build_grid_tissue
+
+    # Build a 2x1 grid (grid_size=2 along x, 1 along y using custom helper)
+    # The helper builds grid_size^2 cells; for 2x1 we simulate by building 2x2 and slicing,
+    # but here we build grid_size=2 and then select first row to emulate 2x1.
+    tissue_full = build_grid_tissue(grid_size=2, cell_size=1.0)
+
+    # Reduce to 2x1 by taking the first two cells (at y=0 row)
+    tissue = Tissue()
+    tissue.add_cell(tissue_full.cells[0])
+    tissue.add_cell(tissue_full.cells[1])
+
+    # Sum of local vertices before pooling
+    total_local = sum(cell.vertices.shape[0] for cell in tissue.cells)
+    assert total_local == 8  # 2 cells × 4 vertices
+
+    # Build global vertex pool
+    tissue.build_global_vertices()
+
+    # Global vertices should be fewer than total local (shared boundary)
+    assert tissue.vertices.shape[0] < total_local
+
+
+def test_global_vertex_pool_reconstruct_matches_original_build_grid_tissue():
+    """Reconstructing cell vertices from global pool should match originals (within tolerance)."""
+    from myvertexmodel.__main__ import build_grid_tissue
+
+    # Build 2x1 tissue similarly by selecting first row cells
+    tissue_full = build_grid_tissue(grid_size=2, cell_size=1.0)
+    tissue = Tissue()
+    tissue.add_cell(tissue_full.cells[0])
+    tissue.add_cell(tissue_full.cells[1])
+
+    # Keep copies of original local vertices
+    originals = [cell.vertices.copy() for cell in tissue.cells]
+
+    # Build global pool and reconstruct
+    tissue.build_global_vertices()
+    tissue.reconstruct_cell_vertices()
+
+    # Each cell's vertices should match originals within tolerance
+    for cell, orig in zip(tissue.cells, originals):
+        assert np.allclose(cell.vertices, orig, atol=1e-8)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
