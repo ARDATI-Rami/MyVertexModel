@@ -51,6 +51,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--plot", action="store_true", help="Display final tissue plot.")
     parser.add_argument("--output", type=str, default=None, help="If set, save plot image to this path (implies --plot).")
     parser.add_argument("--no-energy-print", action="store_true", help="Suppress energy output printing.")
+    # Energy parameterization
+    parser.add_argument("--k-area", type=float, default=1.0, help="Area elasticity coefficient k_area.")
+    parser.add_argument("--k-perimeter", type=float, default=0.1, help="Perimeter contractility coefficient k_perimeter.")
+    parser.add_argument("--gamma", type=float, default=0.05, help="Line tension parameter gamma.")
+    parser.add_argument("--target-area", type=float, default=1.0, help="Preferred target cell area A0.")
+    # Simulation gradient configuration
+    parser.add_argument("--epsilon", type=float, default=1e-6, help="Finite-difference step size for gradient estimation.")
+    parser.add_argument("--damping", type=float, default=1.0, help="Damping / learning-rate factor applied to gradient descent.")
     return parser.parse_args(argv)
 
 
@@ -63,7 +71,19 @@ def main(argv: Optional[List[str]] = None):
     args = parse_args(argv)
 
     tissue = build_grid_tissue(grid_size=args.grid_size)
-    sim = Simulation(tissue=tissue, dt=args.dt, energy_params=EnergyParameters())
+    energy_params = EnergyParameters(
+        k_area=args.k_area,
+        k_perimeter=args.k_perimeter,
+        gamma=args.gamma,
+        target_area=args.target_area,
+    )
+    sim = Simulation(
+        tissue=tissue,
+        dt=args.dt,
+        energy_params=energy_params,
+        epsilon=args.epsilon,
+        damping=args.damping,
+    )
 
     initial_energy = sim.total_energy()
     for _ in range(args.steps):
@@ -73,6 +93,10 @@ def main(argv: Optional[List[str]] = None):
     if not args.no_energy_print:
         print(f"Initial energy: {initial_energy:.6f}")
         print(f"Final energy:   {final_energy:.6f}")
+        print(
+            f"Parameters: k_area={args.k_area} k_perimeter={args.k_perimeter} gamma={args.gamma} "
+            f"target_area={args.target_area} epsilon={args.epsilon} damping={args.damping} dt={args.dt} steps={args.steps}"
+        )
 
     if args.plot or args.output:
         try:
