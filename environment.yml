@@ -1,12 +1,13 @@
 name: myvertexmodel
 channels:
   - conda-forge
+  - defaults
 dependencies:
   - python=3.11
-  - numpy
   - shapely
-  - scipy
+  - numpy
   - matplotlib
   - dill
-  - pytest  # added for running test suite
-  - pip
+  - scipy
+  - pytest
+prefix: /home/ardati/anaconda3/envs/myvertexmodel

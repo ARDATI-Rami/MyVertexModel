@@ -415,7 +415,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3)
+            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3, show_cell_ids=True)
             ax.set_title(f"Initial Tissue (Growing cell ID: {growing_cell_id})", fontsize=12, fontweight='bold')
             initial_plot_path = sim_folder / "growth_initial.png"
             plt.savefig(str(initial_plot_path), dpi=150)
@@ -496,7 +496,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3)
+            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3, show_cell_ids=True)
             ax.set_title(f"Final Tissue (Cell {growing_cell_id} area: {final_area:.2f})", fontsize=12, fontweight='bold')
             final_plot_path = sim_folder / "growth_final.png"
             plt.savefig(str(final_plot_path), dpi=150, bbox_inches='tight')
