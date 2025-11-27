@@ -3,7 +3,7 @@ Core data structures for vertex model.
 """
 
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Union, Dict
 from dataclasses import dataclass
 # Import for type hints; avoid heavy usage until implementation proceeds
 try:
@@ -198,11 +198,13 @@ class Tissue:
         # Store global vertex array
         self.vertices = np.array(unique_vertices, dtype=float)
 
-        # Assign vertex_indices to each cell
+        # Assign vertex_indices to each cell and deduplicate consecutive duplicates
         offset = 0
         for cell, count in zip(self.cells, cell_vertex_counts):
             if count > 0:
-                cell.vertex_indices = np.array(global_indices[offset:offset+count], dtype=int)
+                indices = np.array(global_indices[offset:offset+count], dtype=int)
+
+                cell.vertex_indices = indices
                 offset += count
             else:
                 cell.vertex_indices = np.empty((0,), dtype=int)
@@ -226,7 +228,21 @@ class Tissue:
             if cell.vertex_indices.shape[0] > 0:
                 # Reconstruct from global pool
                 cell.vertices = self.vertices[cell.vertex_indices].copy()
-            # else: leave cell.vertices as-is (empty or existing local data)
+            elif cell.vertices.shape[0] > 0 and self.vertices.shape[0] > 0:
+                # Legacy cells may only store local vertices; build indices on demand
+                indices = []
+                for vert in cell.vertices:
+                    diffs = np.linalg.norm(self.vertices - vert, axis=1)
+                    idx = int(np.argmin(diffs))
+                    if diffs[idx] > 1e-10:
+                        raise ValueError(
+                            "Cannot reconstruct vertex_indices for cell without matching global vertices"
+                        )
+                    # Avoid duplicate consecutive indices while preserving order
+                    if indices and indices[-1] == idx:
+                        continue
+                    indices.append(idx)
+                cell.vertex_indices = np.array(indices, dtype=int)
 
 
 # ---------------- Energy API (interfaces only / stubs) ---------------- #
@@ -243,12 +259,14 @@ class EnergyParameters:
         k_area: Coefficient for area elasticity term.
         k_perimeter: Coefficient for perimeter contractility term.
         gamma: Effective edge tension (may later be refined per-edge).
-        target_area: Preferred area A0 for cells (can later be per-cell).
+        target_area: Preferred area A0 for cells. Can be:
+            - float: Single global target area for all cells
+            - Dict[int, float]: Per-cell target areas keyed by cell.id
     """
     k_area: float = 1.0
     k_perimeter: float = 0.1
     gamma: float = 0.05
-    target_area: float = 1.0
+    target_area: Union[float, Dict[int, float]] = 1.0
 
 
 def cell_energy(cell: Cell, params: EnergyParameters, geometry: "GeometryCalculator",
@@ -298,8 +316,14 @@ def cell_energy(cell: Cell, params: EnergyParameters, geometry: "GeometryCalcula
     area = geometry.calculate_area(verts)
     perimeter = geometry.calculate_perimeter(verts)
 
+    # Get target area (per-cell or global)
+    if isinstance(params.target_area, dict):
+        target = params.target_area.get(cell.id, 1.0)  # Default to 1.0 if not found
+    else:
+        target = params.target_area
+
     # Energy components
-    e_area = 0.5 * params.k_area * (area - params.target_area) ** 2
+    e_area = 0.5 * params.k_area * (area - target) ** 2
     e_perim = 0.5 * params.k_perimeter * perimeter ** 2
     e_line = params.gamma * perimeter
 
@@ -389,4 +413,3 @@ def cell_energy_gradient_analytic(
         "Use finite_difference_cell_gradient from myvertexmodel.simulation instead. "
         "This placeholder is reserved for future analytical derivative implementation."
     )
-

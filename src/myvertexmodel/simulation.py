@@ -159,6 +159,32 @@ class Simulation:
         for _ in range(n_steps):
             self.step()
 
+    def run_with_logging(self, n_steps: int, log_interval: int = 1) -> list[tuple[float, float]]:
+        """Run the simulation while logging energy vs time samples.
+
+        Records (time, total_energy) every ``log_interval`` steps AFTER performing each step.
+        Does not record the initial (time=0) state to keep semantics simple and match interval logic.
+
+        Args:
+            n_steps: Total number of steps to perform.
+            log_interval: Interval (in steps) at which to record samples. Must be >= 1.
+
+        Returns:
+            list of (time, energy) tuples sampled after steps where (step_index + 1) % log_interval == 0.
+            Length will be n_steps // log_interval if n_steps is divisible; otherwise floor division result.
+
+        Raises:
+            ValueError: If log_interval < 1.
+        """
+        if log_interval < 1:
+            raise ValueError("log_interval must be >= 1")
+        samples: list[tuple[float, float]] = []
+        for step_idx in range(n_steps):
+            self.step()
+            if (step_idx + 1) % log_interval == 0:
+                samples.append((self.time, self.total_energy()))
+        return samples
+
     def total_energy(self) -> float:
         """Compute total tissue energy using current energy parameters.
 

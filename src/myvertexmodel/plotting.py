@@ -32,6 +32,10 @@ def plot_tissue(
     alpha: float = 0.2,
     linewidth: float = 1.0,
     colors: Optional[Sequence[str]] = None,
+    show_vertex_ids: bool = False,
+    show_cell_ids: bool = False,
+    vertex_id_fontsize: int = 8,
+    cell_id_fontsize: int = 10,
 ) -> Axes:
     """Plot all cells in a tissue as polygons.
 
@@ -49,6 +53,10 @@ def plot_tissue(
         alpha: Face alpha transparency.
         linewidth: Polygon edge width.
         colors: Optional list of face colors per cell.
+        show_vertex_ids: If True, label vertices with their global vertex indices.
+        show_cell_ids: If True, label cells with their cell IDs.
+        vertex_id_fontsize: Font size for vertex ID labels.
+        cell_id_fontsize: Font size for cell ID labels.
 
     Returns:
         Axes: The matplotlib Axes containing the plot.
@@ -71,6 +79,24 @@ def plot_tissue(
         ax.add_patch(patch)
         if show_vertices:
             ax.scatter(verts[:, 0], verts[:, 1], s=15, c=vertex_color, zorder=3)
+
+        # Show cell ID at centroid
+        if show_cell_ids:
+            centroid = np.mean(verts, axis=0)
+            ax.text(centroid[0], centroid[1], str(cell.id),
+                   fontsize=cell_id_fontsize, ha='center', va='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+                   zorder=4)
+
+    # Show vertex IDs from global vertex pool
+    if show_vertex_ids and hasattr(tissue, 'vertices') and tissue.vertices.shape[0] > 0:
+        # Plot each global vertex with its ID
+        for vi, vertex in enumerate(tissue.vertices):
+            ax.text(vertex[0], vertex[1], str(vi),
+                   fontsize=vertex_id_fontsize, ha='right', va='bottom',
+                   color='red', weight='bold',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8, edgecolor='red'),
+                   zorder=5)
 
     # Auto-scale view
     all_vertices = np.vstack([c.vertices for c in tissue.cells if c.vertices.shape[0] > 0]) if tissue.cells else np.empty((0, 2))

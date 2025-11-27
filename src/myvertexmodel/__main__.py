@@ -11,6 +11,7 @@ import argparse
 import sys
 import numpy as np
 from typing import List, Optional
+from pathlib import Path
 from . import Tissue, Cell, Simulation, plot_tissue, EnergyParameters
 
 
@@ -50,7 +51,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--grid-size", type=int, default=2, help="Grid size (creates grid-size^2 cells).")
     parser.add_argument("--plot", action="store_true", help="Display final tissue plot.")
     parser.add_argument("--output", type=str, default=None, help="If set, save plot image to this path (implies --plot).")
-    parser.add_argument("--no-energy-print", action="store_true", help="Suppress energy output printing.")
+    parser.add_argument("--no-energy-print", action="store_true", help="Suppress initial/final energy output printing.")
+    # Logging / instrumentation
+    parser.add_argument("--log-energy", action="store_true", help="Log energy vs time samples during the run.")
+    parser.add_argument("--log-interval", type=int, default=1, help="Interval (in steps) between energy log samples.")
     # Energy parameterization
     parser.add_argument("--k-area", type=float, default=1.0, help="Area elasticity coefficient k_area.")
     parser.add_argument("--k-perimeter", type=float, default=0.1, help="Perimeter contractility coefficient k_perimeter.")
@@ -67,6 +71,7 @@ def main(argv: Optional[List[str]] = None):
 
     Builds a tissue, runs a short simulation, and prints initial/final energy.
     Optionally plots the final tissue state if --plot is provided.
+    When --log-energy is specified, uses run_with_logging to record energy samples.
     """
     args = parse_args(argv)
 
@@ -86,8 +91,12 @@ def main(argv: Optional[List[str]] = None):
     )
 
     initial_energy = sim.total_energy()
-    for _ in range(args.steps):
-        sim.step()
+    samples = None
+    if args.log_energy:
+        samples = sim.run_with_logging(n_steps=args.steps, log_interval=args.log_interval)
+    else:
+        for _ in range(args.steps):
+            sim.step()
     final_energy = sim.total_energy()
 
     if not args.no_energy_print:
@@ -97,6 +106,27 @@ def main(argv: Optional[List[str]] = None):
             f"Parameters: k_area={args.k_area} k_perimeter={args.k_perimeter} gamma={args.gamma} "
             f"target_area={args.target_area} epsilon={args.epsilon} damping={args.damping} dt={args.dt} steps={args.steps}"
         )
+
+    if args.log_energy and samples is not None:
+        # Print table header
+        print("\nEnergy log (time, energy):")
+        print("time,energy")
+        for t, e in samples:
+            print(f"{t:.6f},{e:.6f}")
+        # If output path provided, also write CSV next to plot image
+        if args.output:
+            out_base = Path(args.output)
+            csv_path = out_base.with_suffix("")  # strip existing suffix
+            # Build energy log filename: original stem + '_energy.csv'
+            energy_csv = out_base.parent / f"{out_base.stem}_energy.csv"
+            try:
+                with open(energy_csv, "w", encoding="utf-8") as f:
+                    f.write("time,energy\n")
+                    for t, e in samples:
+                        f.write(f"{t:.6f},{e:.6f}\n")
+                print(f"Saved energy log CSV to {energy_csv}")
+            except Exception as e:  # pragma: no cover
+                print(f"Failed to write energy CSV: {e}")
 
     if args.plot or args.output:
         try:
@@ -114,7 +144,6 @@ def main(argv: Optional[List[str]] = None):
             if out_path is not None:
                 plt.savefig(out_path, dpi=150)
                 print(f"Saved plot to {out_path} (backend={backend})")
-            # Show only if backend supports interaction and user requested --plot explicitly
             if args.plot and not backend.startswith("agg"):
                 plt.show()
             elif args.plot and backend.startswith("agg") and args.output is None:

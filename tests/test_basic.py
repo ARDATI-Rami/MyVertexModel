@@ -1040,5 +1040,306 @@ def test_global_vertex_pool_reconstruct_matches_original_build_grid_tissue():
         assert np.allclose(cell.vertices, orig, atol=1e-8)
 
 
+def test_multi_cell_2x2_grid_energy_monotonicity():
+    """Test that energy is non-increasing for a 2×2 grid multi-cell tissue.
+
+    Creates a 2×2 grid, runs a few steps with gradient descent, and verifies
+    that total energy decreases (or stays constant within tolerance).
+    This is a sanity check for multi-cell configurations.
+    """
+    tissue = Tissue()
+    cell_size = 1.0
+    cid = 1
+    # Build 2×2 grid
+    for i in range(2):
+        for j in range(2):
+            x0, y0 = i * cell_size, j * cell_size
+            verts = np.array([
+                [x0, y0],
+                [x0 + cell_size, y0],
+                [x0 + cell_size, y0 + cell_size],
+                [x0, y0 + cell_size],
+            ], dtype=float)
+            tissue.add_cell(Cell(cell_id=cid, vertices=verts))
+            cid += 1
+
+    # Create simulation with reasonable parameters and small dt
+    params = EnergyParameters(k_area=1.0, k_perimeter=0.1, gamma=0.05, target_area=1.0)
+    sim = Simulation(tissue=tissue, dt=0.005, energy_params=params)
+
+    # Record initial energy
+    energy_initial = sim.total_energy()
+
+    # Run a few steps
+    n_steps = 5
+    for _ in range(n_steps):
+        sim.step()
+
+    # Record final energy
+    energy_final = sim.total_energy()
+
+    # Assert energy is non-increasing (with small tolerance for numerical errors)
+    assert energy_final <= energy_initial + 1e-9, \
+        f"Energy increased: initial={energy_initial:.12f}, final={energy_final:.12f}"
+
+    # Also check both energies are finite and non-negative
+    assert np.isfinite(energy_initial) and energy_initial >= 0.0
+    assert np.isfinite(energy_final) and energy_final >= 0.0
+
+
+def test_per_cell_target_areas():
+    """Test that per-cell target areas work correctly in energy computation."""
+    tissue = Tissue()
+
+    # Create two cells with different sizes
+    cell1 = Cell(cell_id=1, vertices=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float))
+    cell2 = Cell(cell_id=2, vertices=np.array([[1, 0], [3, 0], [3, 2], [1, 2]], dtype=float))
+    tissue.add_cell(cell1)
+    tissue.add_cell(cell2)
+
+    # Per-cell target areas
+    target_areas = {1: 1.0, 2: 4.0}
+    params = EnergyParameters(target_area=target_areas)
+    geometry = GeometryCalculator()
+
+    # Compute energies
+    e1 = cell_energy(cell1, params, geometry)
+    e2 = cell_energy(cell2, params, geometry)
+
+    # Both should be finite
+    assert np.isfinite(e1) and np.isfinite(e2)
+
+    # Verify correct target was used
+    # Cell 1: area = 1.0, target = 1.0 -> area term should be ~0
+    # Cell 2: area = 4.0, target = 4.0 -> area term should be ~0
+    actual_area1 = geometry.calculate_area(cell1.vertices)
+    actual_area2 = geometry.calculate_area(cell2.vertices)
+    assert actual_area1 == pytest.approx(1.0)
+    assert actual_area2 == pytest.approx(4.0)
+
+    # Energy should be dominated by perimeter and line tension terms since area terms are zero
+    # Just verify energies are positive and finite
+    assert e1 > 0.0 and e2 > 0.0
+
+    # Test tissue energy with per-cell targets
+    e_total = tissue_energy(tissue, params, geometry)
+    assert np.isfinite(e_total)
+    assert e_total == pytest.approx(e1 + e2)
+
+
+def test_per_cell_target_areas_with_growth():
+    """Test that modifying per-cell target areas during simulation works correctly."""
+    tissue = Tissue()
+
+    # Create a simple 2-cell tissue
+    cell1 = Cell(cell_id=1, vertices=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float))
+    cell2 = Cell(cell_id=2, vertices=np.array([[1, 0], [2, 0], [2, 1], [1, 1]], dtype=float))
+    tissue.add_cell(cell1)
+    tissue.add_cell(cell2)
+
+    geometry = GeometryCalculator()
+
+    # Initialize with equal target areas
+    target_areas = {1: 1.0, 2: 1.0}
+    params = EnergyParameters(k_area=1.0, k_perimeter=0.1, gamma=0.05, target_area=target_areas)
+    sim = Simulation(tissue=tissue, dt=0.005, energy_params=params)
+
+    # Record initial area of cell 1
+    initial_area = geometry.calculate_area(cell1.vertices)
+
+    # Increase target area for cell 1 (simulate growth)
+    target_areas[1] = 2.0
+
+    # Run simulation - cell 1 should expand to meet new target
+    for _ in range(20):
+        sim.step()
+
+    # Cell 1 area should have increased (not necessarily to 2.0 yet, but should be larger)
+    final_area = geometry.calculate_area(cell1.vertices)
+    assert final_area > initial_area, f"Cell area did not increase: initial={initial_area}, final={final_area}"
+
+    # Energy should still be finite
+    assert np.isfinite(sim.total_energy())
+
+
+def test_run_with_logging_basic():
+    """Test Simulation.run_with_logging returns expected number of samples and finite energies."""
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    tissue.add_cell(Cell(cell_id=1, vertices=square))
+    sim = Simulation(tissue=tissue, dt=0.01)
+
+    n_steps = 5
+    log_interval = 2
+    samples = sim.run_with_logging(n_steps=n_steps, log_interval=log_interval)
+
+    # Expected number of samples: floor(n_steps / log_interval)
+    expected_len = n_steps // log_interval
+    assert len(samples) == expected_len
+
+    # Each sample should be (time, energy) with time increasing and energy finite
+    last_time = 0.0
+    for t, e in samples:
+        assert t > last_time
+        last_time = t
+        assert np.isfinite(e)
+        assert e >= 0.0
+
+    # Times should match step multiples of dt * log_interval
+    for idx, (t, _) in enumerate(samples, start=1):
+        # Sample after k*log_interval steps => time = k*log_interval*dt
+        k = idx  # because samples are recorded sequentially at each interval
+        expected_time = k * log_interval * sim.dt
+        assert t == pytest.approx(expected_time)
+
+
+# ---------------- ACAM Import Tests ---------------- #
+
+def test_acam_importer_mock_json(tmp_path):
+    """Test ACAM tissue import from JSON with mock data."""
+    from myvertexmodel import load_acam_from_json
+    import json
+
+    # Create mock ACAM cell data
+    mock_cells = [
+        {"id": 1, "x": 0.0, "y": 0.0, "identifier": "A"},
+        {"id": 2, "x": 2.0, "y": 0.0, "identifier": "B"},
+        {"id": 3, "x": 1.0, "y": 1.7, "identifier": "C"},
+        {"id": 4, "x": 10.0, "y": 10.0, "identifier": "bnd"},  # Boundary cell
+    ]
+
+    # Save to JSON
+    json_path = tmp_path / "mock_acam.json"
+    with open(json_path, 'w') as f:
+        json.dump(mock_cells, f)
+
+    # Load tissue
+    tissue = load_acam_from_json(
+        json_path,
+        approx_radius=0.5,
+        vertex_count=6,
+        adhesion_distance=1.0,
+        skip_boundary=True,
+    )
+
+    # Should have 3 cells (4th is boundary)
+    assert len(tissue.cells) == 3
+
+    # Should have global vertex pool
+    assert tissue.vertices.shape[0] > 0
+
+    # Each cell should have vertices
+    for cell in tissue.cells:
+        assert cell.vertices.shape[0] == 6  # hexagons
+        assert cell.vertex_indices.shape[0] == 6
+
+
+def test_acam_importer_boundary_filtering(tmp_path):
+    """Test that boundary cells are correctly filtered."""
+    from myvertexmodel import load_acam_from_json
+    import json
+
+    mock_cells = [
+        {"id": 1, "x": 0.0, "y": 0.0, "identifier": "A"},
+        {"id": 2, "x": 2.0, "y": 0.0, "identifier": "bnd"},
+        {"id": 3, "x": 4.0, "y": 0.0, "identifier": "bnd"},
+    ]
+
+    json_path = tmp_path / "mock_with_bnd.json"
+    with open(json_path, 'w') as f:
+        json.dump(mock_cells, f)
+
+    # With skip_boundary=True (default)
+    tissue = load_acam_from_json(json_path, skip_boundary=True)
+    assert len(tissue.cells) == 1
+
+    # With skip_boundary=False
+    tissue_all = load_acam_from_json(json_path, skip_boundary=False)
+    assert len(tissue_all.cells) == 3
+
+
+def test_acam_importer_vertex_merging(tmp_path):
+    """Test that vertices are merged within adhesion distance."""
+    from myvertexmodel import load_acam_from_json
+    import json
+
+    # Two cells close enough that their polygons should share vertices
+    mock_cells = [
+        {"id": 1, "x": 0.0, "y": 0.0, "identifier": "A"},
+        {"id": 2, "x": 0.8, "y": 0.0, "identifier": "B"},  # Very close
+    ]
+
+    json_path = tmp_path / "mock_close.json"
+    with open(json_path, 'w') as f:
+        json.dump(mock_cells, f)
+
+    # Load with adhesion_distance that should merge vertices
+    tissue = load_acam_from_json(
+        json_path,
+        approx_radius=0.5,
+        vertex_count=6,
+        adhesion_distance=1.0,  # High tolerance should merge nearby vertices
+    )
+
+    # Total local vertices = 2 cells × 6 vertices = 12
+    total_local = sum(c.vertices.shape[0] for c in tissue.cells)
+    assert total_local == 12
+
+    # Global vertices should be fewer due to merging
+    assert tissue.vertices.shape[0] < total_local
+
+
+def test_acam_importer_energy_finite(tmp_path):
+    """Test that loaded ACAM tissue has finite energy."""
+    from myvertexmodel import load_acam_from_json, tissue_energy, EnergyParameters, GeometryCalculator
+    import json
+
+    mock_cells = [
+        {"id": 1, "x": 0.0, "y": 0.0, "identifier": "A"},
+        {"id": 2, "x": 2.0, "y": 0.0, "identifier": "B"},
+        {"id": 3, "x": 1.0, "y": 1.7, "identifier": "C"},
+    ]
+
+    json_path = tmp_path / "mock_energy.json"
+    with open(json_path, 'w') as f:
+        json.dump(mock_cells, f)
+
+    tissue = load_acam_from_json(json_path)
+
+    # Compute energy
+    params = EnergyParameters()
+    geometry = GeometryCalculator()
+    energy = tissue_energy(tissue, params, geometry)
+
+    # Energy should be finite and non-negative
+    assert np.isfinite(energy)
+    assert energy >= 0.0
+
+
+def test_acam_importer_different_vertex_counts(tmp_path):
+    """Test ACAM import with different polygon vertex counts."""
+    from myvertexmodel import load_acam_from_json
+    import json
+
+    mock_cells = [{"id": 1, "x": 0.0, "y": 0.0, "identifier": "A"}]
+    json_path = tmp_path / "mock_vertex_count.json"
+    with open(json_path, 'w') as f:
+        json.dump(mock_cells, f)
+
+    # Test with triangles (3 vertices)
+    tissue_tri = load_acam_from_json(json_path, vertex_count=3)
+    assert tissue_tri.cells[0].vertices.shape[0] == 3
+
+    # Test with pentagons (5 vertices)
+    tissue_pent = load_acam_from_json(json_path, vertex_count=5)
+    assert tissue_pent.cells[0].vertices.shape[0] == 5
+
+    # Test with octagons (8 vertices)
+    tissue_oct = load_acam_from_json(json_path, vertex_count=8)
+    assert tissue_oct.cells[0].vertices.shape[0] == 8
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
