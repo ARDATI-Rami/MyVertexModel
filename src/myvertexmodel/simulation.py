@@ -34,7 +34,7 @@ class OverdampedForceBalanceParams:
     """
     gamma: float = 1.0
     noise_strength: float = 0.0
-    active_force_func: Optional[Callable[["Cell", "Tissue", Dict[str, Any]], np.ndarray]] = None
+    active_force_func: Optional[Callable[[Cell, Tissue, Dict[str, Any]], np.ndarray]] = None
     active_force_params: Dict[str, Any] = field(default_factory=dict)
     random_seed: Optional[int] = None
 
