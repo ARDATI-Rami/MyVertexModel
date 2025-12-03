@@ -1339,6 +1339,440 @@ def test_acam_importer_different_vertex_counts(tmp_path):
     assert tissue_oct.cells[0].vertices.shape[0] == 8
 
 
+# ---------------- Overdamped Force-Balance Dynamics Tests ---------------- #
+
+def test_overdamped_force_balance_params_creation():
+    """Test OverdampedForceBalanceParams dataclass creation."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    # Default parameters
+    params = OverdampedForceBalanceParams()
+    assert params.gamma == 1.0
+    assert params.noise_strength == 0.0
+    assert params.active_force_func is None
+    assert params.active_force_params == {}
+    assert params.random_seed is None
+
+
+def test_overdamped_force_balance_params_validation():
+    """Test OverdampedForceBalanceParams validation."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    # gamma must be > 0
+    with pytest.raises(ValueError, match="gamma must be > 0"):
+        OverdampedForceBalanceParams(gamma=0.0)
+    with pytest.raises(ValueError, match="gamma must be > 0"):
+        OverdampedForceBalanceParams(gamma=-1.0)
+
+    # noise_strength must be >= 0
+    with pytest.raises(ValueError, match="noise_strength must be >= 0"):
+        OverdampedForceBalanceParams(noise_strength=-0.1)
+
+
+def test_overdamped_force_balance_params_custom():
+    """Test OverdampedForceBalanceParams with custom values."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    def custom_active_force(cell, tissue, params):
+        return np.ones_like(cell.vertices) * params.get("scale", 1.0)
+
+    params = OverdampedForceBalanceParams(
+        gamma=2.0,
+        noise_strength=0.1,
+        active_force_func=custom_active_force,
+        active_force_params={"scale": 0.5},
+        random_seed=42,
+    )
+
+    assert params.gamma == 2.0
+    assert params.noise_strength == 0.1
+    assert params.active_force_func is custom_active_force
+    assert params.active_force_params == {"scale": 0.5}
+    assert params.random_seed == 42
+
+
+def test_compute_active_forces_no_function():
+    """Test compute_active_forces returns zeros when no function is provided."""
+    from myvertexmodel import compute_active_forces
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square)
+    tissue.add_cell(cell)
+
+    forces = compute_active_forces(cell, tissue, None, {})
+    assert forces.shape == cell.vertices.shape
+    assert np.all(forces == 0)
+
+
+def test_compute_active_forces_with_function():
+    """Test compute_active_forces calls the provided function."""
+    from myvertexmodel import compute_active_forces
+
+    def constant_force(cell, tissue, params):
+        return np.ones_like(cell.vertices) * params.get("magnitude", 1.0)
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square)
+    tissue.add_cell(cell)
+
+    forces = compute_active_forces(cell, tissue, constant_force, {"magnitude": 2.5})
+    assert forces.shape == cell.vertices.shape
+    assert np.all(forces == 2.5)
+
+
+def test_overdamped_force_balance_step_basic():
+    """Test overdamped_force_balance_step produces valid output."""
+    from myvertexmodel import overdamped_force_balance_step, OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    params = EnergyParameters()
+    geometry = GeometryCalculator()
+    ofb_params = OverdampedForceBalanceParams(gamma=1.0, noise_strength=0.0)
+
+    new_vertices = overdamped_force_balance_step(
+        cell, tissue, params, geometry, ofb_params, dt=0.01, epsilon=1e-6
+    )
+
+    assert new_vertices.shape == cell.vertices.shape
+    assert np.all(np.isfinite(new_vertices))
+
+
+def test_overdamped_force_balance_step_empty_cell():
+    """Test overdamped_force_balance_step handles empty cells."""
+    from myvertexmodel import overdamped_force_balance_step, OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    empty_cell = Cell(cell_id=1)
+    tissue.add_cell(empty_cell)
+
+    params = EnergyParameters()
+    geometry = GeometryCalculator()
+    ofb_params = OverdampedForceBalanceParams()
+
+    new_vertices = overdamped_force_balance_step(
+        empty_cell, tissue, params, geometry, ofb_params, dt=0.01
+    )
+
+    assert new_vertices.shape == (0, 2)
+
+
+def test_simulation_gradient_descent_default():
+    """Test that Simulation uses gradient_descent solver by default."""
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    sim = Simulation(tissue=tissue, dt=0.01)
+    assert sim.solver_type == "gradient_descent"
+
+    # Run a step
+    e_initial = sim.total_energy()
+    sim.step()
+    e_after = sim.total_energy()
+
+    # Energy should decrease
+    assert e_after <= e_initial + 1e-10
+
+
+def test_simulation_overdamped_force_balance_solver():
+    """Test Simulation with overdamped_force_balance solver."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    ofb_params = OverdampedForceBalanceParams(gamma=1.0, noise_strength=0.0)
+
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+
+    assert sim.solver_type == "overdamped_force_balance"
+    assert sim.ofb_params.gamma == 1.0
+
+    # Run a step
+    e_initial = sim.total_energy()
+    sim.step()
+    e_after = sim.total_energy()
+
+    # Energy should decrease (deterministic dynamics with no active forces)
+    assert e_after <= e_initial + 1e-10
+
+
+def test_simulation_overdamped_with_noise():
+    """Test overdamped solver with stochastic noise."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    # Use seeded RNG for reproducibility
+    ofb_params = OverdampedForceBalanceParams(
+        gamma=1.0,
+        noise_strength=0.01,
+        random_seed=42,
+    )
+
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+
+    # Run several steps
+    for _ in range(10):
+        sim.step()
+
+    # Vertices should have moved (due to noise and forces)
+    assert not np.allclose(sim.tissue.cells[0].vertices, square)
+
+    # Energy should still be finite
+    assert np.isfinite(sim.total_energy())
+
+
+def test_simulation_overdamped_reproducibility():
+    """Test that seeded noise produces reproducible results."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    def run_sim_with_seed(seed):
+        tissue = Tissue()
+        square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+        cell = Cell(cell_id=1, vertices=square.copy())
+        tissue.add_cell(cell)
+
+        ofb_params = OverdampedForceBalanceParams(
+            gamma=1.0,
+            noise_strength=0.1,
+            random_seed=seed,
+        )
+
+        sim = Simulation(
+            tissue=tissue,
+            dt=0.01,
+            solver_type="overdamped_force_balance",
+            ofb_params=ofb_params,
+        )
+
+        for _ in range(5):
+            sim.step()
+
+        return sim.tissue.cells[0].vertices.copy()
+
+    # Same seed should produce same results
+    verts1 = run_sim_with_seed(12345)
+    verts2 = run_sim_with_seed(12345)
+    assert np.allclose(verts1, verts2)
+
+    # Different seed should produce different results
+    verts3 = run_sim_with_seed(54321)
+    assert not np.allclose(verts1, verts3)
+
+
+def test_simulation_overdamped_with_active_forces():
+    """Test overdamped solver with custom active forces."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    # Define a simple constant active force
+    def centripetal_force(cell, tissue, params):
+        """Apply constant force toward cell centroid."""
+        centroid = np.mean(cell.vertices, axis=0)
+        directions = centroid - cell.vertices
+        magnitudes = np.linalg.norm(directions, axis=1, keepdims=True)
+        # Avoid division by zero
+        magnitudes = np.where(magnitudes < 1e-10, 1.0, magnitudes)
+        return params.get("strength", 0.1) * (directions / magnitudes)
+
+    tissue = Tissue()
+    # Larger square to see effect of centripetal force
+    square = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    ofb_params = OverdampedForceBalanceParams(
+        gamma=1.0,
+        noise_strength=0.0,
+        active_force_func=centripetal_force,
+        active_force_params={"strength": 0.5},
+    )
+
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+
+    # Run several steps
+    for _ in range(10):
+        sim.step()
+
+    # Vertices should have moved
+    assert not np.allclose(sim.tissue.cells[0].vertices, square)
+    assert np.isfinite(sim.total_energy())
+
+
+def test_simulation_overdamped_default_params():
+    """Test that overdamped solver uses default params if none provided."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id=1, vertices=square.copy())
+    tissue.add_cell(cell)
+
+    # No ofb_params provided - should use defaults
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+    )
+
+    assert sim.ofb_params is not None
+    assert sim.ofb_params.gamma == 1.0
+    assert sim.ofb_params.noise_strength == 0.0
+
+    sim.step()
+    assert np.isfinite(sim.total_energy())
+
+
+def test_simulation_overdamped_gamma_effect():
+    """Test that higher gamma slows down dynamics."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    def run_with_gamma(gamma_val):
+        tissue = Tissue()
+        # Start with non-equilibrium square
+        square = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+        cell = Cell(cell_id=1, vertices=square.copy())
+        tissue.add_cell(cell)
+
+        ofb_params = OverdampedForceBalanceParams(gamma=gamma_val, noise_strength=0.0)
+        sim = Simulation(
+            tissue=tissue,
+            dt=0.01,
+            solver_type="overdamped_force_balance",
+            ofb_params=ofb_params,
+        )
+
+        sim.step()
+        return np.linalg.norm(sim.tissue.cells[0].vertices - square)
+
+    # Higher gamma should result in smaller displacement
+    displacement_low_gamma = run_with_gamma(0.5)
+    displacement_high_gamma = run_with_gamma(2.0)
+
+    assert displacement_low_gamma > displacement_high_gamma
+
+
+def test_simulation_solver_switch():
+    """Test switching between solvers produces similar behavior."""
+    # Create two identical tissues
+    def create_tissue():
+        tissue = Tissue()
+        square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+        cell = Cell(cell_id=1, vertices=square.copy())
+        tissue.add_cell(cell)
+        return tissue
+
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    # Gradient descent simulation
+    tissue1 = create_tissue()
+    sim1 = Simulation(tissue=tissue1, dt=0.01, damping=1.0, solver_type="gradient_descent")
+    sim1.step()
+    verts_gd = sim1.tissue.cells[0].vertices.copy()
+
+    # Overdamped simulation with gamma=1 (should be equivalent when noise=0 and no active forces)
+    tissue2 = create_tissue()
+    ofb_params = OverdampedForceBalanceParams(gamma=1.0, noise_strength=0.0)
+    sim2 = Simulation(
+        tissue=tissue2,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+    sim2.step()
+    verts_ofb = sim2.tissue.cells[0].vertices.copy()
+
+    # With gamma=1 and damping=1, the results should be very close
+    # (both are doing: v_new = v_old - dt * grad)
+    assert np.allclose(verts_gd, verts_ofb, rtol=1e-10)
+
+
+def test_multi_cell_overdamped_simulation():
+    """Test overdamped solver with multiple cells."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    tissue = Tissue()
+
+    # Create a 2x1 grid
+    cell1 = Cell(cell_id=1, vertices=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float))
+    cell2 = Cell(cell_id=2, vertices=np.array([[1, 0], [2, 0], [2, 1], [1, 1]], dtype=float))
+    tissue.add_cell(cell1)
+    tissue.add_cell(cell2)
+
+    ofb_params = OverdampedForceBalanceParams(gamma=1.0, noise_strength=0.0)
+
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.005,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+
+    initial_energy = sim.total_energy()
+
+    for _ in range(10):
+        sim.step()
+
+    final_energy = sim.total_energy()
+
+    # Energy should not increase (deterministic dynamics)
+    assert final_energy <= initial_energy + 1e-9
+    assert np.isfinite(final_energy)
+
+
+def test_overdamped_run_with_logging():
+    """Test run_with_logging works with overdamped solver."""
+    from myvertexmodel import OverdampedForceBalanceParams
+
+    tissue = Tissue()
+    square = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    tissue.add_cell(Cell(cell_id=1, vertices=square.copy()))
+
+    ofb_params = OverdampedForceBalanceParams(gamma=1.0, noise_strength=0.0)
+    sim = Simulation(
+        tissue=tissue,
+        dt=0.01,
+        solver_type="overdamped_force_balance",
+        ofb_params=ofb_params,
+    )
+
+    samples = sim.run_with_logging(n_steps=5, log_interval=2)
+
+    # Should have 2 samples (steps 2 and 4)
+    assert len(samples) == 2
+
+    for t, e in samples:
+        assert t > 0
+        assert np.isfinite(e)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
 
