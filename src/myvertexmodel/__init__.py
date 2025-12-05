@@ -6,6 +6,7 @@ __version__ = "0.1.0"
 
 from .core import Cell, Tissue
 from .core import EnergyParameters, cell_energy, tissue_energy, cell_energy_gradient_analytic
+from .core import merge_nearby_vertices, mesh_edges
 from .geometry import GeometryCalculator
 from .simulation import (
     Simulation,
@@ -26,6 +27,8 @@ __all__ = [
     "cell_energy",
     "tissue_energy",
     "cell_energy_gradient_analytic",
+    "merge_nearby_vertices",
+    "mesh_edges",
     "GeometryCalculator",
     "Simulation",
     "finite_difference_cell_gradient",
