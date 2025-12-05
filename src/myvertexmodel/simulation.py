@@ -3,9 +3,137 @@ Simulation engine for vertex model dynamics.
 """
 
 import numpy as np
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Literal, Callable, Dict, Any
 from .core import Tissue, Cell, EnergyParameters, tissue_energy
 from .geometry import GeometryCalculator
+
+
+@dataclass
+class OverdampedForceBalanceParams:
+    """Parameters for the overdamped force-balance dynamics solver.
+
+    The overdamped force-balance dynamics are governed by:
+        γ dx_k/dt = F_k = -∇_{x_k} E + F_k^{active} + η_k
+
+    where:
+        γ: friction coefficient (viscous drag)
+        -∇_{x_k} E: mechanical force derived from energy gradient
+        F_k^{active}: active forces (e.g., actomyosin contractility)
+        η_k: stochastic noise term (optional)
+
+    Attributes:
+        gamma: Friction coefficient (viscous drag). Higher values slow dynamics. Must be > 0.
+        noise_strength: Intensity of thermal/stochastic fluctuations. Set to 0 for deterministic dynamics.
+        active_force_func: Optional callable for computing active forces. Signature:
+            (cell: Cell, tissue: Tissue, params: Dict[str, Any]) -> np.ndarray
+            Should return an array of shape (N, 2) where N is the number of vertices.
+            If None, no active forces are applied.
+        active_force_params: Dictionary of parameters passed to the active force function.
+        random_seed: Optional seed for the random number generator (for reproducibility).
+    """
+    gamma: float = 1.0
+    noise_strength: float = 0.0
+    active_force_func: Optional[Callable[[Cell, Tissue, Dict[str, Any]], np.ndarray]] = None
+    active_force_params: Dict[str, Any] = field(default_factory=dict)
+    random_seed: Optional[int] = None
+
+    def __post_init__(self):
+        if self.gamma <= 0:
+            raise ValueError(f"gamma must be > 0, got {self.gamma}")
+        if self.noise_strength < 0:
+            raise ValueError(f"noise_strength must be >= 0, got {self.noise_strength}")
+
+
+def compute_active_forces(
+    cell: Cell,
+    tissue: Tissue,
+    active_force_func: Optional[Callable[[Cell, Tissue, Dict[str, Any]], np.ndarray]],
+    active_force_params: Dict[str, Any]
+) -> np.ndarray:
+    """Compute active forces for a cell's vertices.
+
+    Active forces represent non-conservative forces such as actomyosin contractility,
+    polarity-driven forces, or other biological active processes.
+
+    Args:
+        cell: Cell for which to compute active forces.
+        tissue: Tissue containing the cell (may be used for neighbor interactions).
+        active_force_func: Callable that computes active forces. If None, returns zeros.
+        active_force_params: Parameters passed to the active force function.
+
+    Returns:
+        np.ndarray: Active force array of shape (N, 2) where N is the number of vertices.
+    """
+    if active_force_func is None:
+        return np.zeros_like(cell.vertices)
+    return active_force_func(cell, tissue, active_force_params)
+
+
+def overdamped_force_balance_step(
+    cell: Cell,
+    tissue: Tissue,
+    energy_params: EnergyParameters,
+    geometry: GeometryCalculator,
+    ofb_params: OverdampedForceBalanceParams,
+    dt: float,
+    epsilon: float = 1e-6,
+    rng: Optional[np.random.Generator] = None
+) -> np.ndarray:
+    """Perform an overdamped force-balance update for a single cell.
+
+    Implements the Euler-Maruyama integration scheme for overdamped Langevin dynamics:
+        x_new = x_old + (dt / γ) * F
+
+    where:
+        F = -∇E + F_active + η
+
+    and η is Gaussian noise with variance 2 * noise_strength * dt.
+
+    Args:
+        cell: Cell to update.
+        tissue: Tissue containing the cell.
+        energy_params: Energy parameters for gradient computation.
+        geometry: GeometryCalculator instance.
+        ofb_params: Overdamped force-balance parameters (γ, noise, active forces).
+        dt: Time step.
+        epsilon: Finite difference step size for gradient estimation.
+        rng: Optional NumPy random generator for reproducible noise.
+
+    Returns:
+        np.ndarray: New vertex positions of shape (N, 2).
+    """
+    verts = cell.vertices
+    if verts.shape[0] == 0:
+        return np.empty((0, 2), dtype=float)
+
+    # 1. Compute energy gradient (mechanical force = -gradE)
+    grad_e = finite_difference_cell_gradient(
+        cell, tissue, energy_params, geometry, epsilon=epsilon
+    )
+    mechanical_force = -grad_e
+
+    # 2. Compute active forces
+    active_force = compute_active_forces(
+        cell, tissue, ofb_params.active_force_func, ofb_params.active_force_params
+    )
+
+    # 3. Compute noise term (if enabled)
+    if ofb_params.noise_strength > 0 and dt > 0:
+        if rng is None:
+            noise = np.sqrt(2 * ofb_params.noise_strength * dt) * np.random.standard_normal(verts.shape)
+        else:
+            noise = np.sqrt(2 * ofb_params.noise_strength * dt) * rng.standard_normal(verts.shape)
+    else:
+        noise = np.zeros_like(verts)
+
+    # 4. Total force
+    total_force = mechanical_force + active_force + noise
+
+    # 5. Overdamped update: dx = (dt / γ) * F
+    new_vertices = verts + (dt / ofb_params.gamma) * total_force
+
+    return new_vertices
 
 
 def finite_difference_cell_gradient(
@@ -70,6 +198,10 @@ def finite_difference_cell_gradient(
 class Simulation:
     """Main simulation class for vertex model dynamics.
 
+    Supports two solver types:
+        - "gradient_descent": Pure energy descent using finite-difference gradients (default).
+        - "overdamped_force_balance": Overdamped Langevin dynamics with optional active forces and noise.
+
     Attributes:
         tissue: Tissue being simulated.
         dt: Time step.
@@ -78,6 +210,8 @@ class Simulation:
         energy_params: Parameters used for energy evaluation.
         epsilon: Finite-difference step size for gradient estimation.
         damping: Scalar multiplier applied to gradient descent updates ("learning rate" factor).
+        solver_type: Type of solver ("gradient_descent" or "overdamped_force_balance").
+        ofb_params: Parameters for overdamped force-balance solver (if applicable).
     """
 
     def __init__(
@@ -88,6 +222,8 @@ class Simulation:
         validate_each_step: bool = False,
         epsilon: float = 1e-6,
         damping: float = 1.0,
+        solver_type: Literal["gradient_descent", "overdamped_force_balance"] = "gradient_descent",
+        ofb_params: Optional[OverdampedForceBalanceParams] = None,
     ):
         """Initialize a simulation.
 
@@ -97,7 +233,13 @@ class Simulation:
             energy_params: Optional EnergyParameters instance (default constructed if None)
             validate_each_step: If True, validate tissue structure after each step
             epsilon: Finite-difference step size used for gradient estimation.
-            damping: Multiplier on the gradient when updating vertex positions (allows tuning descent magnitude).
+            damping: Multiplier on the gradient when updating vertex positions (for gradient_descent solver).
+            solver_type: Type of solver to use. Options:
+                - "gradient_descent": Pure energy descent (default). Uses `damping` parameter.
+                - "overdamped_force_balance": Overdamped Langevin dynamics. Uses `ofb_params`.
+            ofb_params: Parameters for the overdamped force-balance solver. Required if
+                solver_type is "overdamped_force_balance". If None and solver_type is
+                "overdamped_force_balance", default OverdampedForceBalanceParams will be used.
         """
         self.tissue = tissue if tissue is not None else Tissue()
         self.dt = dt
@@ -107,29 +249,59 @@ class Simulation:
         self.validate_each_step = validate_each_step
         self.epsilon = epsilon
         self.damping = damping
+        self.solver_type = solver_type
+        
+        # Set up overdamped force-balance parameters
+        if solver_type == "overdamped_force_balance":
+            self.ofb_params = ofb_params if ofb_params is not None else OverdampedForceBalanceParams()
+            # Initialize random generator if seed is provided
+            if self.ofb_params.random_seed is not None:
+                self._rng = np.random.default_rng(self.ofb_params.random_seed)
+            else:
+                self._rng = None
+        else:
+            self.ofb_params = ofb_params  # Store even if not used, for introspection
+            self._rng = None
 
     def step(self):
         """Perform a single simulation step.
 
-        Implements a naive explicit gradient descent on cell vertex positions.
-        For each vertex coordinate (x, y) of every cell, estimates the gradient
-        of the total energy via central finite differences using the
-        finite_difference_cell_gradient helper function.
-
-        Then updates vertices by:
-            V_new = V_old - dt * damping * grad
+        Uses the solver specified by `solver_type`:
+            - "gradient_descent": Pure energy descent.
+            - "overdamped_force_balance": Overdamped Langevin dynamics.
 
         Notes:
             - Uses per-cell local vertex arrays (future: migrate to global Tissue.vertices).
-            - Not optimized; O(N_vertices * cells) energy evaluations.
-            - ε (epsilon) and damping are user-configurable via Simulation constructor.
             - Does NOT handle topological changes (T1 transitions, division, etc.).
         """
         # Validate before updates if requested to catch pre-existing invalid states
         if self.validate_each_step:
             self.tissue.validate()
 
-        # Compute gradient and update each cell
+        if self.solver_type == "gradient_descent":
+            self._step_gradient_descent()
+        elif self.solver_type == "overdamped_force_balance":
+            self._step_overdamped_force_balance()
+        else:
+            raise ValueError(f"Unknown solver_type: {self.solver_type}")
+
+        # Advance time after position updates
+        self.time += self.dt
+
+        # Validate after position updates if requested
+        if self.validate_each_step:
+            self.tissue.validate()
+
+    def _step_gradient_descent(self):
+        """Perform gradient descent update for all cells.
+
+        Implements a naive explicit gradient descent on cell vertex positions.
+        For each vertex coordinate (x, y) of every cell, estimates the gradient
+        of the total energy via central finite differences.
+
+        Updates vertices by:
+            V_new = V_old - dt * damping * grad
+        """
         for cell in self.tissue.cells:
             if cell.vertices.shape[0] == 0:
                 continue  # nothing to do
@@ -142,12 +314,31 @@ class Simulation:
             # Gradient descent update
             cell.vertices = cell.vertices - self.dt * self.damping * grad
 
-        # Advance time after position updates
-        self.time += self.dt
+    def _step_overdamped_force_balance(self):
+        """Perform overdamped force-balance update for all cells.
 
-        # Validate after position updates if requested
-        if self.validate_each_step:
-            self.tissue.validate()
+        Implements overdamped Langevin dynamics:
+            γ dx/dt = -∇E + F_active + η
+
+        Using Euler-Maruyama integration:
+            x_new = x_old + (dt / γ) * F
+        """
+        for cell in self.tissue.cells:
+            if cell.vertices.shape[0] == 0:
+                continue  # nothing to do
+
+            # Use the overdamped force-balance step function
+            new_vertices = overdamped_force_balance_step(
+                cell=cell,
+                tissue=self.tissue,
+                energy_params=self.energy_params,
+                geometry=self.geometry,
+                ofb_params=self.ofb_params,
+                dt=self.dt,
+                epsilon=self.epsilon,
+                rng=self._rng,
+            )
+            cell.vertices = new_vertices
 
     def run(self, n_steps: int = 100):
         """
