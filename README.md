@@ -36,6 +36,11 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
   - CSV tracking and PNG visualization
 - **Parameter diagnostic tools** for stability testing
 - **Tissue comparison** and validation utilities
+- **Overdamped Force–Balance (OFB) Solver**:
+  - Supports overdamped dynamics mode with force-derived global vertex updates
+  - Explicit Euler integration: γ · dx/dt = F = −∇E + η
+  - Flags for solver selection, friction, noise, and random seed
+  - Tuning guidance for dt/gamma, with practical tips for stable growth
 
 ### Visualization
 - **Enhanced plotting** with `plot_tissue()`:

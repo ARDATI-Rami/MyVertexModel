@@ -88,7 +88,88 @@ class Tissue:
     def add_cell(self, cell: Cell):
         """Add a cell to the tissue."""
         self.cells.append(cell)
-        
+
+    def cell_neighbor_counts(self) -> Dict[int, int]:
+        """Return the number of neighbors for each cell.
+
+        Two cells are considered neighbors if they share at least one polygon edge.
+        The method prefers the global vertex representation via ``cell.vertex_indices``
+        when available; otherwise it falls back to comparing local ``cell.vertices``
+        coordinates with a tolerance.
+
+        Returns:
+            Dict[int, int]: Mapping from cell.id to number of distinct neighboring cells.
+        """
+        # Prefer global vertex indices when available for robustness
+        use_global = any(cell.vertex_indices.shape[0] > 0 for cell in self.cells)
+
+        # Build per-cell edge sets represented as unordered vertex index pairs
+        cell_edges: Dict[int, set] = {}
+
+        if use_global and self.vertices.shape[0] > 0:
+            for cell in self.cells:
+                idx = cell.vertex_indices
+                if idx.shape[0] < 2:
+                    cell_edges[cell.id] = set()
+                    continue
+                # Close the polygon
+                edges = set()
+                for i in range(len(idx)):
+                    a = int(idx[i])
+                    b = int(idx[(i + 1) % len(idx)])
+                    if a == b:
+                        continue
+                    if a < b:
+                        edges.add((a, b))
+                    else:
+                        edges.add((b, a))
+                cell_edges[cell.id] = edges
+        else:
+            # Fallback: build a temporary global pool based on coordinates with a tight tolerance
+            # This avoids double-implementing the globalisation logic
+            # Reuse build_global_vertices non-destructively by working on a shallow copy
+            tmp = Tissue()
+            for c in self.cells:
+                tmp.add_cell(Cell(cell_id=c.id, vertices=c.vertices.copy()))
+            tmp.build_global_vertices(tol=1e-10)
+            for cell in tmp.cells:
+                idx = cell.vertex_indices
+                if idx.shape[0] < 2:
+                    cell_edges[cell.id] = set()
+                    continue
+                edges = set()
+                for i in range(len(idx)):
+                    a = int(idx[i])
+                    b = int(idx[(i + 1) % len(idx)])
+                    if a == b:
+                        continue
+                    if a < b:
+                        edges.add((a, b))
+                    else:
+                        edges.add((b, a))
+                cell_edges[cell.id] = edges
+
+        # Build neighbor sets by shared edges
+        neighbors: Dict[int, set] = {cell.id: set() for cell in self.cells}
+        cell_ids = [cell.id for cell in self.cells]
+        id_to_idx = {cid: i for i, cid in enumerate(cell_ids)}
+
+        # Compare edges of every pair of cells; typical cell count is modest so O(N^2) is acceptable
+        for i, ci in enumerate(cell_ids):
+            edges_i = cell_edges.get(ci, set())
+            if not edges_i:
+                continue
+            for j in range(i + 1, len(cell_ids)):
+                cj = cell_ids[j]
+                edges_j = cell_edges.get(cj, set())
+                if not edges_j:
+                    continue
+                if edges_i.intersection(edges_j):
+                    neighbors[ci].add(cj)
+                    neighbors[cj].add(ci)
+
+        return {cid: len(nbrs) for cid, nbrs in neighbors.items()}
+
     def __repr__(self):
         return f"Tissue(n_cells={len(self.cells)})"
 
