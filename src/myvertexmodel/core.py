@@ -26,12 +26,12 @@ class Cell:
         used by other code, but serves as the migration path.
     """
 
-    def __init__(self, cell_id: int, vertices: Optional[np.ndarray] = None, vertex_indices: Optional[np.ndarray] = None):
+    def __init__(self, cell_id: Union[int, str], vertices: Optional[np.ndarray] = None, vertex_indices: Optional[np.ndarray] = None):
         """
         Initialize a cell.
         
         Args:
-            cell_id: Unique identifier for the cell.
+            cell_id: Unique identifier for the cell (int or str).
             vertices: Array of vertex coordinates (N x 2) in local form (optional if using indices).
             vertex_indices: Optional 1D array of integer indices into a global `Tissue.vertices` array.
 
