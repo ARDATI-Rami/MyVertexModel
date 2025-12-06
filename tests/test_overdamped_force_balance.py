@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from myvertexmodel.simulation import Simulation, OverdampedForceBalanceParams
-from myvertexmodel.core import Tissue, Cell, EnergyParameters
+from myvertexmodel.core import Tissue, Cell
+from myvertexmodel.energy import EnergyParameters
 from myvertexmodel.geometry import GeometryCalculator
 
 
