@@ -223,8 +223,10 @@ def _build_tissue_from_vertices(
         vertices = np.array(cell_data["vertices"], dtype=float)
         cell_id = cell_data.get("id", len(tissue.cells) + 1)
 
-        # Create cell with vertices
-        cell = Cell(cell_id=cell_id, vertices=vertices)
+        # Create cell with vertices, preserving ACAM identifier as id when available
+        identifier = cell_data.get("identifier")
+        effective_id = str(identifier) if identifier is not None else cell_id
+        cell = Cell(cell_id=effective_id, vertices=vertices)
 
         # Store ACAM identifier as a custom attribute for later use
         identifier = cell_data.get("identifier", None)
@@ -266,7 +268,7 @@ def _build_tissue_from_cell_data(
             radius=approx_radius,
             n_sides=vertex_count,
         )
-        tissue.add_cell(Cell(cell_id=cell_data["id"], vertices=vertices))
+        tissue.add_cell(Cell(cell_id=cell_data["id"], vertices=vertices, label=str(cell_data.get("identifier", cell_data["id"]))))
 
     # Merge vertices within adhesion distance to create global vertex pool
     tissue.build_global_vertices(tol=adhesion_distance)
@@ -588,9 +590,9 @@ def _fuse_junction_vertices(
             root = find(rec_index)
             indices.append(index_lookup[root])
 
-        cell = Cell(cell_id=poly.cell_id, vertex_indices=np.array(indices, dtype=int))
+        # In topology-aware path, use the polygon name (ACAM identifier) as cell id
+        cell = Cell(cell_id=str(poly.name), vertex_indices=np.array(indices, dtype=int))
         cell.vertices = tissue.vertices[cell.vertex_indices]
-        cell.acam_identifier = poly.name
         tissue.add_cell(cell)
         per_cell_vertex_indices[poly.name] = indices
 
