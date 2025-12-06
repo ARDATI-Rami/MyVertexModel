@@ -1,43 +1,88 @@
 """simulate_cell_growth.py
 
-Simulate growth of a single cell in a vertex model tissue until it reaches double its initial area.
+Simulate growth of one or more cells in a vertex model tissue until they reach double their initial area.
 
 The simulation:
 1. Builds or loads a tissue (honeycomb built on-the-fly by default, or load from file)
-2. Selects one cell as the "growing cell" by cell ID
-3. Gradually increases the target area of that cell from A_initial to 2*A_initial
-4. Allows the tissue to mechanically equilibrate as the growing cell expands
-5. Tracks the growing cell's actual area vs target area throughout
+2. Selects cells as "growing cells" by cell ID(s)
+3. Gradually increases target area of each growing cell from A_initial to 2*A_initial
+4. Allows the tissue to mechanically equilibrate as cells expand
+5. Tracks actual area vs target area for each growing cell
 
-Usage (default - builds honeycomb 14 cells):
-    python examples/simulate_cell_growth.py --growing-cell-id 7 --plot
+Usage Examples:
+--------------
+Single cell (honeycomb):
+    python examples/simulate_cell_growth.py --growing-cell-ids 7 --plot
 
-Usage (build honeycomb 19 cells):
-    python examples/simulate_cell_growth.py --build-honeycomb 19 --growing-cell-id 10 --plot
+Multiple cells (honeycomb):
+    python examples/simulate_cell_growth.py --growing-cell-ids 3,7,10 --plot
 
-Usage (load from file):
-    python examples/simulate_cell_growth.py --tissue-file pickled_tissues/YOUR_TISSUE --growing-cell-id 7 --plot
+Load tissue from file with multiple cells:
+    python examples/simulate_cell_growth.py --tissue-file pickled_tissues/acam_79cells.dill \\
+        --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL --total-steps 100 --dt 0.00001 --plot --enable-merge
 
-Options:
-    --tissue-file           Path to tissue file (optional, builds honeycomb if not specified)
-    --build-honeycomb       Build honeycomb: '14' for 2-3-4-3-2 (default), '19' for 3-4-5-4-3
-    --growing-cell-id       Cell ID to grow (default: 7)
-    --growth-steps          Number of steps over which to ramp target area (default: 100)
-    --total-steps           Total simulation steps (default: 200)
-    --dt                    Time step size (default: 0.01)
-    --plot                  Show initial and final tissue plots
-    --log-interval          Print progress every N steps (default: 10)
-    --save-csv              Save growth tracking data to CSV file
-    --k-area                Area elasticity coefficient (default: 1.0)
-    --k-perimeter           Perimeter coefficient (default: 0.1)
-    --gamma                 Line tension (default: 0.05)
+Basic Options:
+    --tissue-file FILE      Path to tissue file (.dill). If not specified, builds honeycomb.
+    --build-honeycomb {14,19}
+                            Build honeycomb on-the-fly: '14' (2-3-4-3-2) or '19' (3-4-5-4-3).
+    --growing-cell-ids IDS  Comma-separated cell IDs to grow (e.g., 'I,AW,AB' or '7,10').
+    --growing-cell-id ID    (Deprecated) Use --growing-cell-ids instead.
+    --growth-steps N        Steps over which to ramp target area (default: 100).
+    --total-steps N         Total simulation steps (default: 200).
+    --dt FLOAT              Time step size (default: 0.01).
+    --plot                  Show and save initial/final tissue plots.
+    --log-interval N        Print progress every N steps (default: 10).
+    --save-csv FILE         Custom CSV filename (default: growth_tracking.csv).
+
+Energy Parameters:
+    --k-area FLOAT          Area elasticity coefficient (default: 1.0).
+    --k-perimeter FLOAT     Perimeter coefficient (default: 0.1).
+    --gamma FLOAT           Line tension parameter (default: 0.05).
+
+Solver Options:
+    --solver {gradient_descent,overdamped_force_balance}
+                            Solver type (default: gradient_descent).
+    --epsilon FLOAT         Finite difference epsilon (default: 1e-6).
+    --damping FLOAT         Damping factor for gradient descent (default: 1.0).
+
+OFB (Overdamped Force Balance) Parameters:
+    --ofb-gamma FLOAT       Friction coefficient γ (default: 1.0).
+    --ofb-noise FLOAT       Noise strength (default: 0.0).
+    --ofb-seed INT          Random seed for reproducibility.
+
+Vertex Merging Options:
+    --enable-merge          Enable periodic merging of nearby vertices.
+    --merge-distance-tol FLOAT
+                            Distance tolerance for merging (default: 0.1).
+    --merge-energy-tol FLOAT
+                            Max energy change allowed (default: 0.1).
+    --merge-geometry-tol FLOAT
+                            Max area/perimeter change allowed (default: 1.0).
+    --merge-interval N      Merge every N steps (default: 10).
+
+Meshing Options:
+    --mesh-mode {none,low,medium,high}
+                            Edge meshing mode at start (default: none).
+    --mesh-length-scale FLOAT
+                            Base length scale for meshing (default: 1.0).
+    --enable-mesh-dynamic   Enable periodic meshing during simulation.
+    --mesh-interval N       Apply meshing every N steps (default: 10).
+
+Other Options:
+    --relabel-alpha-mode {direct,order}
+                            Relabel cell IDs to alphabetic: 'direct' (1->A) or 'order' (sorted).
+
+Output:
+    Creates a simulation folder (Sim_<tissue>_<cells>_<timestamp>_<random>/) containing:
+    - growth_initial.png    Initial tissue visualization (if --plot)
+    - growth_final.png      Final tissue visualization (if --plot)
+    - growth_tracking.csv   Per-step tracking data for all growing cells
 """
 from __future__ import annotations
 import argparse
 import sys
 from typing import Optional, List
 from pathlib import Path
-from collections import defaultdict
 from datetime import datetime
 import random
 import numpy as np
@@ -124,169 +169,17 @@ def compute_global_gradient(tissue: Tissue, energy_params: EnergyParameters,
     return gradient
 
 
-def analyze_shared_vertices(tissue: Tissue, tolerance: float = 1e-8) -> dict:
-    """Analyze which vertices are shared between cells using global vertex pool.
-
-    Args:
-        tissue: Tissue to analyze (must have global vertex pool)
-        tolerance: Not used (kept for compatibility)
-
-    Returns:
-        Dictionary mapping vertex index to list of cell IDs sharing that vertex
-    """
-    from collections import defaultdict
-
-    vertex_to_cells = defaultdict(list)
-
-    # Use vertex_indices to track sharing via global vertex pool
-    for cell in tissue.cells:
-        if hasattr(cell, 'vertex_indices') and cell.vertex_indices is not None:
-            for vi in cell.vertex_indices:
-                vertex_to_cells[vi].append(cell.id)
-        else:
-            # Fallback: analyze local vertices (less accurate)
-            for vertex in cell.vertices:
-                vertex_key = (round(vertex[0] / tolerance) * tolerance,
-                             round(vertex[1] / tolerance) * tolerance)
-                vertex_to_cells[vertex_key].append(cell.id)
-
-    # Keep only vertices that are shared (appear in multiple cells)
-    shared_vertices = {v: cells for v, cells in vertex_to_cells.items() if len(cells) > 1}
-
-    return shared_vertices
-
-
-def print_shared_vertices_report(tissue: Tissue, tolerance: float = 1e-8):
-    """Print a detailed report of shared vertices between cells using global vertex pool.
-
-    Args:
-        tissue: Tissue to analyze (must have global vertex pool)
-        tolerance: Not used (kept for compatibility)
-    """
-    print("\n" + "="*70)
-    print("SHARED VERTICES ANALYSIS REPORT (Global Vertex Pool)")
-    print("="*70)
-
-    shared_vertices = analyze_shared_vertices(tissue, tolerance)
-
-    # Summary statistics using global vertex pool
-    if hasattr(tissue, 'vertices') and tissue.vertices is not None:
-        total_global_vertices = len(tissue.vertices)
-        total_local_refs = sum(len(c.vertices) for c in tissue.cells)
-    else:
-        # Fallback if no global pool
-        total_global_vertices = len(set(shared_vertices.keys()))
-        total_local_refs = sum(len(c.vertices) for c in tissue.cells)
-
-    num_shared = len(shared_vertices)
-
-    print(f"\nSummary:")
-    print(f"  Total vertex references: {total_local_refs}")
-    print(f"  Global vertex pool size: {total_global_vertices}")
-    print(f"  Shared vertices (used by 2+ cells): {num_shared}")
-    if total_global_vertices > 0:
-        print(f"  Vertex sharing ratio: {num_shared / total_global_vertices * 100:.1f}%")
-
-    # Group shared vertices by number of cells sharing them
-    sharing_groups = defaultdict(list)
-    for vertex, cells in shared_vertices.items():
-        sharing_groups[len(cells)].append((vertex, cells))
-
-    if sharing_groups:
-        print(f"\nSharing distribution:")
-        for num_cells in sorted(sharing_groups.keys(), reverse=True):
-            vertices_list = sharing_groups[num_cells]
-            print(f"  Vertices shared by {num_cells} cells: {len(vertices_list)}")
-
-    # Cell neighbor analysis
-    cell_neighbors = defaultdict(set)
-    for vertex, cells in shared_vertices.items():
-        for cell1 in cells:
-            for cell2 in cells:
-                if cell1 != cell2:
-                    cell_neighbors[cell1].add(cell2)
-
-    if cell_neighbors:
-        neighbor_counts = [len(n) for n in cell_neighbors.values()]
-        print(f"\nCell connectivity:")
-        print(f"  Connected cells: {len(cell_neighbors)}/{len(tissue.cells)}")
-        print(f"  Mean neighbors per cell: {np.mean(neighbor_counts):.1f}")
-        print(f"  Neighbor range: {min(neighbor_counts)}-{max(neighbor_counts)}")
-    else:
-        print(f"\n⚠ WARNING: No cells are connected via shared vertices!")
-
-    print("="*70 + "\n")
-
-
-def _connectivity_stats(tissue: Tissue) -> tuple[int, int, int, float]:
-    """Compute connectivity stats: (global_vertices, shared_vertices, connected_cells, mean_neighbors)."""
-    from collections import defaultdict
-    global_vertices = tissue.vertices.shape[0]
-    vertex_to_cells = defaultdict(list)
-    for cell in tissue.cells:
-        if hasattr(cell, 'vertex_indices') and cell.vertex_indices is not None:
-            for vi in cell.vertex_indices:
-                vertex_to_cells[vi].append(cell.id)
-    shared_vertices = sum(1 for cells in vertex_to_cells.values() if len(cells) > 1)
-    cell_neighbors = defaultdict(set)
-    for cells in vertex_to_cells.values():
-        if len(cells) > 1:
-            for c1 in cells:
-                for c2 in cells:
-                    if c1 != c2:
-                        cell_neighbors[c1].add(c2)
-    connected_cells = len(cell_neighbors)
-    mean_neighbors = float(np.mean([len(n) for n in cell_neighbors.values()])) if cell_neighbors else 0.0
-    return global_vertices, shared_vertices, connected_cells, mean_neighbors
-
-
-def stitch_global_vertices(tissue: Tissue, tol_max: float = 5.0, steps: int = 10, max_passes: int = 3) -> None:
-    """Iteratively rebuild the global vertex pool sweeping tolerance from 1..tol_max until convergence.
-
-    For up to max_passes, sweep tol values linspace(1.0, tol_max, steps). At each tol:
-    - tissue.build_global_vertices(tol)
-    - tissue.reconstruct_cell_vertices()
-    Stop early if an entire pass yields no changes in global vertex count, shared-vertex count,
-    or number of connected cells.
-    """
-    tol_min = 1.0
-    schedule = np.linspace(tol_min, tol_max, num=max(2, steps))
-
-    # Establish baseline
-    tissue.build_global_vertices(tol=tol_min)
-    tissue.reconstruct_cell_vertices()
-    prev_stats = _connectivity_stats(tissue)
-    print(f"[Stitch] Start @ tol={tol_min:.2f}: GV={prev_stats[0]}, shared={prev_stats[1]}, "
-          f"connected={prev_stats[2]}, meanN={prev_stats[3]:.2f}")
-
-    for p in range(1, max_passes + 1):
-        changed = False
-        print(f"[Stitch] Pass {p}/{max_passes}")
-        for tol in schedule:
-            tissue.build_global_vertices(tol=float(tol))
-            tissue.reconstruct_cell_vertices()
-            stats = _connectivity_stats(tissue)
-            if stats != prev_stats:
-                changed = True
-                print(f"  tol={tol:.2f}: GV {prev_stats[0]} -> {stats[0]}, shared {prev_stats[1]} -> {stats[1]}, "
-                      f"connected {prev_stats[2]} -> {stats[2]}, meanN {prev_stats[3]:.2f} -> {stats[3]:.2f}")
-                prev_stats = stats
-        if not changed:
-            print("[Stitch] Converged (no changes this pass).")
-            break
-    gv, sh, cc, mn = prev_stats
-    ratio = (sh / gv * 100.0) if gv else 0.0
-    print(f"[Stitch] Final: GV={gv}, shared={sh} ({ratio:.1f}%), connected={cc}/{len(tissue.cells)}, meanN={mn:.2f}")
-
-
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Simulate single-cell growth in vertex model tissue.")
+    parser = argparse.ArgumentParser(description="Simulate cell growth in vertex model tissue.")
     parser.add_argument("--tissue-file", type=str, default=None,
                        help="Path to tissue file (optional if using --build-honeycomb).")
     parser.add_argument("--build-honeycomb", type=str, choices=['14', '19'], default='14',
                        help="Build honeycomb tissue on-the-fly: '14' for 2-3-4-3-2 (default), '19' for 3-4-5-4-3.")
-    parser.add_argument("--growing-cell-id", type=str, default="7",
-                       help="Cell ID to grow (accepts numeric or alphabetic labels).")
+    parser.add_argument("--growing-cell-ids", type=str, default="7",
+                       help="Comma-separated cell IDs to grow (e.g., 'I,AW,AB' or '7').")
+    # Keep backward compatibility with old argument name
+    parser.add_argument("--growing-cell-id", type=str, default=None,
+                       help="(Deprecated) Use --growing-cell-ids instead. Single cell ID to grow.")
     parser.add_argument("--growth-steps", type=int, default=100, help="Steps to ramp up target area.")
     parser.add_argument("--total-steps", type=int, default=200, help="Total simulation steps.")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size.")
@@ -325,26 +218,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def create_simulation_folder(tissue_identifier: str, growing_cell_id: int) -> Path:
+def create_simulation_folder(tissue_identifier: str, growing_cell_ids: List[str]) -> Path:
     """Create a unique simulation folder for this run.
 
     Args:
         tissue_identifier: Identifier for the tissue (e.g., 'honeycomb14', 'acam_79cells')
-        growing_cell_id: ID of the growing cell
+        growing_cell_ids: List of growing cell IDs
 
     Returns:
         Path to the created simulation folder
     """
-    # Create timestamp for uniqueness
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Add random number for extra uniqueness (in case multiple runs in same second)
     random_num = random.randint(1000, 9999)
 
-    # Create folder name: Sim_<tissue>_cell<id>_<timestamp>_<random>
-    folder_name = f"Sim_{tissue_identifier}_cell{growing_cell_id}_{timestamp}_{random_num}"
+    # Create cell identifier (use count if many cells, else list them)
+    if len(growing_cell_ids) <= 3:
+        cell_str = "_".join(str(c) for c in growing_cell_ids)
+    else:
+        cell_str = f"{len(growing_cell_ids)}cells"
 
-    # Create in current directory
+    folder_name = f"Sim_{tissue_identifier}_{cell_str}_{timestamp}_{random_num}"
     sim_folder = Path(folder_name)
     sim_folder.mkdir(parents=True, exist_ok=True)
 
@@ -355,12 +248,20 @@ def create_simulation_folder(tissue_identifier: str, growing_cell_id: int) -> Pa
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     
+    # Handle backward compatibility: --growing-cell-id -> --growing-cell-ids
+    if args.growing_cell_id is not None:
+        cell_ids_str = args.growing_cell_id
+    else:
+        cell_ids_str = args.growing_cell_ids
+
+    # Parse comma-separated cell IDs
+    growing_cell_id_list = [cid.strip() for cid in cell_ids_str.split(",") if cid.strip()]
+
     # Determine tissue identifier for folder naming
     tissue_identifier = ""
 
     # Load or build tissue
     if args.tissue_file:
-        # Load from file
         print(f"Loading tissue from: {args.tissue_file}")
         candidate = Path(args.tissue_file)
         if candidate.suffix != ".dill":
@@ -369,31 +270,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: Tissue file not found: {candidate}")
             return 1
         tissue = load_tissue(str(candidate))
-        # Extract tissue identifier from filename (without extension)
         tissue_identifier = candidate.stem
     else:
-        # Build honeycomb tissue on-the-fly
         from myvertexmodel import build_honeycomb_2_3_4_3_2, build_honeycomb_3_4_5_4_3
-
         if args.build_honeycomb == '14':
             print("Building honeycomb tissue (14 cells, 2-3-4-3-2 pattern)...")
             tissue = build_honeycomb_2_3_4_3_2()
             tissue_identifier = "honeycomb14"
-        else:  # '19'
+        else:
             print("Building honeycomb tissue (19 cells, 3-4-5-4-3 pattern)...")
             tissue = build_honeycomb_3_4_5_4_3()
             tissue_identifier = "honeycomb19"
 
     # Create unique simulation folder
-    sim_folder = create_simulation_folder(tissue_identifier, args.growing_cell_id)
+    sim_folder = create_simulation_folder(tissue_identifier, growing_cell_id_list)
     print(f"\nSimulation folder created: {sim_folder}")
-    print(f"  All outputs will be saved to this folder")
 
     # Build global vertex pool
     tissue.build_global_vertices(tol=1e-10)
-
-    # CRITICAL: Sync cell.vertices with global vertex pool
-    # After loading, cell.vertices may be out of sync with tissue.vertices[cell.vertex_indices]
     tissue.reconstruct_cell_vertices()
 
     # Optional: relabel cell IDs to alphabetic
@@ -410,58 +304,62 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     geometry = GeometryCalculator()
 
-    # Find growing cell by ID
-    growing_cell = None
-    # Normalize provided ID
-    provided_id = args.growing_cell_id
-    # Try to match by exact string first; if numeric, also match integer IDs
-    for cell in tissue.cells:
-        if str(cell.id) == provided_id:
-            growing_cell = cell
-            break
-    if growing_cell is None:
-        # Fallback: if provided_id looks like an int, compare against int(cell.id) if possible
+    # Find growing cells by ID - helper function
+    def find_cell_by_id(provided_id: str):
+        for cell in tissue.cells:
+            if str(cell.id) == provided_id:
+                return cell
+        # Fallback: try numeric match
         try:
             pid_int = int(provided_id)
-        except Exception:
-            pid_int = None
-        if pid_int is not None:
             for cell in tissue.cells:
                 try:
                     if int(cell.id) == pid_int:
-                        growing_cell = cell
-                        break
+                        return cell
                 except Exception:
                     continue
+        except ValueError:
+            pass
+        return None
 
-    if growing_cell is None:
-        print(f"\nError: Cell with ID '{args.growing_cell_id}' not found!")
+    # Find all growing cells
+    growing_cells = {}
+    not_found = []
+    for cid in growing_cell_id_list:
+        cell = find_cell_by_id(cid)
+        if cell:
+            growing_cells[cell.id] = cell
+        else:
+            not_found.append(cid)
+
+    if not_found:
+        print(f"\nError: Cell(s) not found: {not_found}")
         print(f"Available cell IDs: {sorted([str(c.id) for c in tissue.cells])}")
-
         return 1
 
-    growing_cell_id = growing_cell.id
-    print(f"\nFound growing cell: ID {growing_cell_id}")
+    if not growing_cells:
+        print("\nError: No growing cells specified!")
+        return 1
+
+    print(f"\nFound {len(growing_cells)} growing cell(s): {list(growing_cells.keys())}")
 
     # Compute initial areas for all cells
-    print("\nComputing initial cell areas...")
-    initial_areas = {}
-    for cell in tissue.cells:
-        initial_areas[cell.id] = geometry.calculate_area(cell.vertices)
-
-    # Set up per-cell target areas (initially equal to actual areas for equilibrium)
+    initial_areas = {cell.id: geometry.calculate_area(cell.vertices) for cell in tissue.cells}
     target_areas = initial_areas.copy()
 
-    # Define growth target for selected cell
-    A_initial = initial_areas[growing_cell_id]
-    A_final = 2.0 * A_initial
-    growth_rate = (A_final - A_initial) / args.growth_steps
+    # Define growth targets for each growing cell
+    growth_info = {}
+    for cell_id, cell in growing_cells.items():
+        A_initial = initial_areas[cell_id]
+        A_final = 2.0 * A_initial
+        growth_rate = (A_final - A_initial) / args.growth_steps
+        growth_info[cell_id] = {"initial": A_initial, "final": A_final, "rate": growth_rate, "cell": cell}
 
     print(f"\nGrowth configuration:")
     print(f"  Tissue: {len(tissue.cells)} cells")
-    print(f"  Growing cell ID: {growing_cell_id}")
-    print(f"  Initial area: {A_initial:.2f}")
-    print(f"  Target area: {A_final:.2f} (2× initial)")
+    print(f"  Growing cells: {len(growing_cells)}")
+    for cid, info in growth_info.items():
+        print(f"    - {cid}: {info['initial']:.2f} → {info['final']:.2f}")
     print(f"  Growth steps: {args.growth_steps}")
     print(f"  Total steps: {args.total_steps}")
     print(f"  Time step dt: {args.dt}")
@@ -525,40 +423,42 @@ def main(argv: Optional[List[str]] = None) -> int:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
             plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
-            ax.set_title(f"Initial Tissue (Growing cell ID: {growing_cell_id})", fontsize=12, fontweight='bold')
+            cell_ids_display = ", ".join(str(c) for c in growing_cells.keys())
+            ax.set_title(f"Initial Tissue (Growing cells: {cell_ids_display})", fontsize=12, fontweight='bold')
             initial_plot_path = sim_folder / "growth_initial.png"
             _save_plot(fig, initial_plot_path, show=True)
             print(f"\nSaved initial tissue plot to {initial_plot_path}")
         except Exception as e:
             print(f"Initial plot failed: {e}")
     
-    # Prepare CSV logging if requested
-    csv_data = []
-    csv_path = None
-    if args.save_csv:
-        # Use provided name but save in simulation folder
-        csv_path = sim_folder / Path(args.save_csv).name
-        csv_data.append(["step", "time", "growing_cell_area", "target_area", "total_energy", "progress_percent"])
-    else:
-        # Auto-generate CSV file in simulation folder
-        csv_path = sim_folder / "growth_tracking.csv"
-        csv_data.append(["step", "time", "growing_cell_area", "target_area", "total_energy", "progress_percent"])
-    
+    # Prepare CSV logging
+    csv_path = sim_folder / (Path(args.save_csv).name if args.save_csv else "growth_tracking.csv")
+    # Build CSV header: step, time, energy, then area/target/progress per cell
+    csv_header = ["step", "time", "total_energy"]
+    for cid in growing_cells.keys():
+        csv_header.extend([f"area_{cid}", f"target_{cid}", f"progress_{cid}"])
+    csv_data = [csv_header]
+
     # Simulation loop
     print("\nStarting simulation...\n")
-    print(f"{'Step':>6} {'Time':>8} {'Area':>10} {'Target':>10} {'Progress':>8} {'Energy':>12}")
-    print("-" * 65)
+    # Build dynamic header based on number of cells
+    if len(growing_cells) == 1:
+        print(f"{'Step':>6} {'Time':>8} {'Area':>10} {'Target':>10} {'Progress':>8} {'Energy':>12}")
+        print("-" * 65)
+    else:
+        print(f"{'Step':>6} {'Time':>8} {'AvgProgress':>10} {'Energy':>12}")
+        print("-" * 45)
 
     sim_time = 0.0
 
     for step in range(args.total_steps):
-        # Update target area for growing cell (linear ramp during growth phase)
-        if step < args.growth_steps:
-            target_areas[growing_cell_id] = A_initial + step * growth_rate
-        else:
-            # After growth phase, maintain final target
-            target_areas[growing_cell_id] = A_final
-        
+        # Update target areas for all growing cells (linear ramp during growth phase)
+        for cid, info in growth_info.items():
+            if step < args.growth_steps:
+                target_areas[cid] = info["initial"] + step * info["rate"]
+            else:
+                target_areas[cid] = info["final"]
+
         if args.solver == "gradient_descent":
             # Compute gradient with respect to GLOBAL vertices
             gradient = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
@@ -622,29 +522,51 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Advance time
         sim_time += args.dt
 
-        # Get current state
-        current_area = geometry.calculate_area(growing_cell.vertices)
-        current_target = target_areas[growing_cell_id]
+        # Get current state for all growing cells
         current_energy = sim.total_energy()
-        progress = (current_area - A_initial) / (A_final - A_initial) * 100
-        
+        cell_progress = {}
+        csv_row = [step, sim_time, current_energy]
+
+        for cid, info in growth_info.items():
+            cell = info["cell"]
+            current_area = geometry.calculate_area(cell.vertices)
+            current_target = target_areas[cid]
+            progress = (current_area - info["initial"]) / (info["final"] - info["initial"]) * 100
+            cell_progress[cid] = {"area": current_area, "target": current_target, "progress": progress}
+            csv_row.extend([current_area, current_target, progress])
+
+        csv_data.append(csv_row)
+
         # Log progress
         if step % args.log_interval == 0 or step == args.total_steps - 1:
-            print(f"{step:6d} {sim_time:8.3f} {current_area:10.2f} {current_target:10.2f} {progress:7.1f}% {current_energy:12.2f}")
+            if len(growing_cells) == 1:
+                cid = list(growing_cells.keys())[0]
+                p = cell_progress[cid]
+                print(f"{step:6d} {sim_time:8.3f} {p['area']:10.2f} {p['target']:10.2f} {p['progress']:7.1f}% {current_energy:12.2f}")
+            else:
+                avg_progress = sum(p["progress"] for p in cell_progress.values()) / len(cell_progress)
+                print(f"{step:6d} {sim_time:8.3f} {avg_progress:9.1f}% {current_energy:12.2f}")
 
-        # Save CSV data (always save now)
-        csv_data.append([step, sim_time, current_area, current_target, current_energy, progress])
-
-        # Check stopping criterion (reached target area)
-        if current_area >= 0.99 * A_final:
-            print(f"\n✓ Growth complete at step {step}! Cell reached {current_area/A_initial:.2f}× initial area.")
+        # Check stopping criterion (all cells reached target area)
+        all_complete = all(
+            cell_progress[cid]["area"] >= 0.99 * growth_info[cid]["final"]
+            for cid in growing_cells.keys()
+        )
+        if all_complete:
+            print(f"\n✓ Growth complete at step {step}! All cells reached target area.")
             break
     
     # Final statistics
-    final_area = geometry.calculate_area(growing_cell.vertices)
     print(f"\nFinal statistics:")
-    print(f"  Growing cell ID {growing_cell_id} area: {final_area:.2f} ({final_area/A_initial:.2f}× initial)")
-    print(f"  Target reached: {final_area >= 0.99 * A_final}")
+    print(f"  Growing cells: {len(growing_cells)}")
+    all_reached = True
+    for cid, info in growth_info.items():
+        final_area = geometry.calculate_area(info["cell"].vertices)
+        ratio = final_area / info["initial"]
+        reached = final_area >= 0.99 * info["final"]
+        all_reached = all_reached and reached
+        print(f"    - {cid}: {final_area:.2f} ({ratio:.2f}× initial) {'✓' if reached else '✗'}")
+    print(f"  All targets reached: {all_reached}")
     print(f"  Final energy: {sim.total_energy():.2f}")
     print(f"  Total simulation time: {sim_time:.3f}")
 
@@ -654,7 +576,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
             plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
-            ax.set_title(f"Final Tissue (Cell {growing_cell_id} area: {final_area:.2f})", fontsize=12, fontweight='bold')
+            cell_ids_display = ", ".join(str(c) for c in growing_cells.keys())
+            ax.set_title(f"Final Tissue (Growing cells: {cell_ids_display})", fontsize=12, fontweight='bold')
             final_plot_path = sim_folder / "growth_final.png"
             _save_plot(fig, final_plot_path, show=True)
             print(f"\nSaved final tissue plot to {final_plot_path}")
