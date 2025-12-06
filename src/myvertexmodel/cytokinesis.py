@@ -502,6 +502,9 @@ def update_global_vertices_from_cells(tissue: Tissue) -> None:
         - Requires tissue.vertices and cell.vertex_indices to be already populated
         - Updates tissue.vertices in place based on cell.vertices
         - Does NOT change vertex_indices (preserves connectivity)
+    
+    Raises:
+        ValueError: If vertex indices are out of bounds or array sizes don't match.
     """
     if tissue.vertices.shape[0] == 0:
         return
@@ -509,6 +512,21 @@ def update_global_vertices_from_cells(tissue: Tissue) -> None:
     # For each cell, update the global vertices based on cell's local vertices
     for cell in tissue.cells:
         if cell.vertex_indices.shape[0] > 0 and cell.vertices.shape[0] > 0:
+            # Validate that indices and vertices match
+            if cell.vertex_indices.shape[0] != cell.vertices.shape[0]:
+                raise ValueError(
+                    f"Cell {cell.id}: vertex_indices size ({cell.vertex_indices.shape[0]}) "
+                    f"doesn't match vertices size ({cell.vertices.shape[0]})"
+                )
+            
+            # Validate that all indices are within bounds
+            if np.any(cell.vertex_indices >= tissue.vertices.shape[0]):
+                raise ValueError(
+                    f"Cell {cell.id}: vertex_indices contains out-of-bounds indices "
+                    f"(max index: {np.max(cell.vertex_indices)}, "
+                    f"tissue has {tissue.vertices.shape[0]} vertices)"
+                )
+            
             # Update global vertices from this cell's local vertices
             tissue.vertices[cell.vertex_indices] = cell.vertices
 
