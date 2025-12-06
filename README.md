@@ -300,7 +300,9 @@ README.md                          # This file
 
 src/myvertexmodel/                 # Core package modules
 ├── __init__.py                    # Package exports
-├── core.py                        # Cell, Tissue, Energy, global vertex pool
+├── core.py                        # Cell, Tissue classes, global vertex pool
+├── energy.py                      # Energy parameters and computation (EnergyParameters, cell_energy, tissue_energy)
+├── mesh_ops.py                    # Mesh operations (merge_nearby_vertices, mesh_edges)
 ├── geometry.py                    # Polygon geometry calculations
 ├── simulation.py                  # Simulation engine
 ├── plotting.py                    # Visualization (enhanced with ID labels)
