@@ -30,10 +30,11 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
 
 ### Simulation & Analysis
 - **Cell growth simulation** (`examples/simulate_cell_growth.py`):
-  - Single-cell growth with gradual target area increase
+  - **Single or multi-cell growth** with gradual target area increase
+  - Comma-separated cell IDs for growing multiple cells simultaneously
   - Global vertex coupling for mechanical consistency
   - Organized output in unique `Sim_*` folders per run
-  - CSV tracking and PNG visualization
+  - CSV tracking and PNG visualization for all growing cells
 - **Parameter diagnostic tools** for stability testing
 - **Tissue comparison** and validation utilities
 - **Overdamped Force–Balance (OFB) Solver**:
@@ -70,7 +71,18 @@ Simulate a single cell growing in a honeycomb tissue:
 # Honeycomb tissue (14 cells), cell 7 grows, creates output folder
 python examples/simulate_cell_growth.py \
   --build-honeycomb 14 \
-  --growing-cell-id 7 \
+  --growing-cell-ids 7 \
+  --total-steps 100 \
+  --plot
+```
+
+Simulate multiple cells growing simultaneously:
+
+```bash
+# Multiple cells growing at once
+python examples/simulate_cell_growth.py \
+  --build-honeycomb 14 \
+  --growing-cell-ids 3,7,10 \
   --total-steps 100 \
   --plot
 ```
@@ -78,17 +90,25 @@ python examples/simulate_cell_growth.py \
 Simulate with ACAM tissue (requires smaller timestep):
 
 ```bash
-# ACAM tissue (~79 cells), use dt=0.0001 for stability
+# ACAM tissue (~79 cells), single cell growth
 python examples/simulate_cell_growth.py \
   --tissue-file pickled_tissues/acam_79cells.dill \
-  --growing-cell-id 59 \
+  --growing-cell-ids AR \
   --total-steps 100 \
-  --dt 0.0001 \
-  --plot
+  --dt 0.00001 \
+  --plot --enable-merge
+
+# ACAM tissue with multiple cells growing
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells.dill \
+  --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL \
+  --total-steps 100 \
+  --dt 0.00001 \
+  --plot --enable-merge
 ```
 
-**Output**: Creates a unique `Sim_<tissue>_cell<id>_<timestamp>_<random>/` folder containing:
-- `growth_tracking.csv` - Area, energy, and progress data
+**Output**: Creates a unique `Sim_<tissue>_<cells>_<timestamp>_<random>/` folder containing:
+- `growth_tracking.csv` - Area, energy, and progress data for all growing cells
 - `growth_initial.png` - Initial tissue state
 - `growth_final.png` - Final tissue state
 
@@ -231,22 +251,44 @@ python -m myvertexmodel --no-energy-print
 For realistic simulations, use the dedicated growth script:
 
 ```bash
-# Honeycomb tissue
+# Honeycomb tissue - single cell
 python examples/simulate_cell_growth.py \
   --build-honeycomb 14 \
-  --growing-cell-id 7 \
+  --growing-cell-ids 7 \
   --total-steps 100 \
   --dt 0.01 \
   --plot
 
-# ACAM tissue (use smaller timestep)
+# Honeycomb tissue - multiple cells
 python examples/simulate_cell_growth.py \
-  --tissue-file pickled_tissues/acam_79cells_repaired.dill \
-  --growing-cell-id 1 \
+  --build-honeycomb 14 \
+  --growing-cell-ids 3,7,10 \
   --total-steps 100 \
-  --dt 0.0001 \
+  --dt 0.01 \
   --plot
+
+# ACAM tissue - single cell (use smaller timestep)
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells.dill \
+  --growing-cell-ids AR \
+  --total-steps 100 \
+  --dt 0.00001 \
+  --plot --enable-merge
+
+# ACAM tissue - multiple cells
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells.dill \
+  --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL \
+  --total-steps 100 \
+  --dt 0.00001 \
+  --plot --enable-merge
 ```
+
+**Key Options:**
+- `--growing-cell-ids`: Comma-separated list of cell IDs to grow (e.g., `7` or `I,AW,AB`)
+- `--enable-merge`: Enable periodic vertex merging during simulation
+- `--solver`: Choose `gradient_descent` (default) or `overdamped_force_balance`
+- See `python examples/simulate_cell_growth.py --help` for all options
 
 See [Quick Start](#quick-start) for more examples.
 
@@ -311,7 +353,7 @@ src/myvertexmodel/                 # Core package modules
 └── io.py                          # Save/load utilities
 
 examples/                          # Example scripts
-├── simulate_cell_growth.py        # Main cell growth simulation (creates Sim_*/ folders)
+├── simulate_cell_growth.py        # Cell growth simulation (single or multi-cell, creates Sim_*/ folders)
 ├── diagnose_tissue.py             # Tissue validation and repair tool
 ├── diagnose_acam_simulation.py    # ACAM parameter diagnostic
 ├── plot_acam_79cells_labeled.py   # Visualization with labels
