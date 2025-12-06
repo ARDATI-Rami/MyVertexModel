@@ -29,6 +29,23 @@ Implement a 2D vertex model for epithelial tissue mechanics. The model represent
   - `validate()`: Checks structural integrity (polygon validity, areas, etc.)
 - **Known issue**: ACAM tissue conversion can create duplicate consecutive vertices in `vertex_indices`, requiring validation and repair (see validation tools in `tests/test_tissue_cell_by_cell.py` and `examples/diagnose_tissue.py`).
 
+### 2.5 Module Organization
+The codebase is organized into focused modules for maintainability:
+
+| Module | Contents | Lines |
+|--------|----------|-------|
+| `core.py` | `Cell`, `Tissue` classes with global vertex pool | ~330 |
+| `energy.py` | `EnergyParameters`, `cell_energy()`, `tissue_energy()` | ~180 |
+| `mesh_ops.py` | `merge_nearby_vertices()`, `mesh_edges()` | ~450 |
+| `geometry.py` | `GeometryCalculator`, polygon utilities | ~150 |
+| `simulation.py` | `Simulation` class, gradient computation | ~390 |
+| `builders.py` | Tissue builders (honeycomb, grid) | ~240 |
+| `acam_importer.py` | ACAM tissue conversion | ~910 |
+| `io.py` | Save/load utilities | ~100 |
+| `plotting.py` | Visualization utilities | ~185 |
+
+All public symbols are re-exported through `__init__.py` for convenient package-level imports.
+
 ## 3. Energy Functional (Implemented)
 Total tissue energy: sum over cells + edge-level line tension.
 
@@ -43,10 +60,10 @@ Where:
 - \(\gamma\): uniform line (junction) tension coefficient.
 
 **Implementation details**:
-- `cell_energy()`: Computes energy for a single cell, supports both local and global vertex representations
-- `tissue_energy()`: Sums all cell energies, preferring global vertex pool when available
-- Energy gradient computed via finite differences (`finite_difference_cell_gradient()`)
-- Analytical gradient also available (`cell_energy_gradient_analytic()`)
+- `cell_energy()`: Computes energy for a single cell, supports both local and global vertex representations (in `energy.py`)
+- `tissue_energy()`: Sums all cell energies, preferring global vertex pool when available (in `energy.py`)
+- Energy gradient computed via finite differences (`finite_difference_cell_gradient()` in `simulation.py`)
+- Analytical gradient also available (`cell_energy_gradient_analytic()` in `energy.py`)
 
 ### 3.1 Components
 - Area elasticity: penalizes deviation from preferred area.
@@ -77,15 +94,17 @@ Where:
 
 ## 5. Current Implementation Status
 **Fully Implemented:**
-- `EnergyParameters`: All fields functional (`k_area`, `k_perimeter`, `gamma`, `target_area`)
-- `cell_energy()`: Complete implementation with area elasticity, perimeter contractility, and line tension
-- `tissue_energy()`: Sums cell energies, supports global vertex representation
-- `Simulation` class: Gradient descent with configurable dt, damping, and validation
-- `GeometryCalculator`: Area, perimeter, centroid calculations with polygon validation
-- Global vertex pool: `build_global_vertices()` and `reconstruct_cell_vertices()` fully operational
-- Tissue builders: `build_grid_tissue()`, `build_honeycomb_2_3_4_3_2()`, `build_honeycomb_3_4_5_4_3()`
-- ACAM importer: `convert_acam_with_topology()` with neighbor topology awareness
-- Validation: `validate()` method, polygon validity checks, CCW ordering enforcement
+- `EnergyParameters`: All fields functional (`k_area`, `k_perimeter`, `gamma`, `target_area`) - in `energy.py`
+- `cell_energy()`: Complete implementation with area elasticity, perimeter contractility, and line tension - in `energy.py`
+- `tissue_energy()`: Sums cell energies, supports global vertex representation - in `energy.py`
+- `merge_nearby_vertices()`: Vertex clustering with union-find algorithm - in `mesh_ops.py`
+- `mesh_edges()`: Edge subdivision with configurable density - in `mesh_ops.py`
+- `Simulation` class: Gradient descent with configurable dt, damping, and validation - in `simulation.py`
+- `GeometryCalculator`: Area, perimeter, centroid calculations with polygon validation - in `geometry.py`
+- Global vertex pool: `build_global_vertices()` and `reconstruct_cell_vertices()` fully operational - in `core.py`
+- Tissue builders: `build_grid_tissue()`, `build_honeycomb_2_3_4_3_2()`, `build_honeycomb_3_4_5_4_3()` - in `builders.py`
+- ACAM importer: `convert_acam_with_topology()` with neighbor topology awareness - in `acam_importer.py`
+- Validation: `validate()` method, polygon validity checks, CCW ordering enforcement - in `core.py` and `geometry.py`
 
 **Key Implementation Notes:**
 - Energy formula: E = 0.5*k_area*(A-A0)² + 0.5*k_perimeter*P² + γ*P
