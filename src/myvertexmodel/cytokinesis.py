@@ -93,6 +93,46 @@ def compute_division_axis(
     return centroid, axis_direction, perpendicular_direction
 
 
+def _find_ray_edge_intersection(
+    ray_origin: np.ndarray,
+    ray_dir: np.ndarray,
+    edge_start: np.ndarray,
+    edge_end: np.ndarray
+) -> Optional[Tuple[float, float]]:
+    """Find intersection between a ray and an edge.
+    
+    Args:
+        ray_origin: Starting point of ray (2D)
+        ray_dir: Direction of ray (2D)
+        edge_start: Start point of edge (2D)
+        edge_end: End point of edge (2D)
+        
+    Returns:
+        Tuple of (t, s) if intersection found, where:
+        - t: Parameter along ray (intersection at ray_origin + t * ray_dir)
+        - s: Parameter along edge (intersection at edge_start + s * (edge_end - edge_start))
+        Returns None if no valid intersection exists.
+    """
+    edge_dir = edge_end - edge_start
+    
+    # Set up linear system: [ray_dir, -edge_dir] @ [t, s]^T = edge_start - ray_origin
+    A = np.column_stack([ray_dir, -edge_dir])
+    b = edge_start - ray_origin
+    
+    try:
+        # Solve for t and s
+        ts = np.linalg.solve(A, b)
+        t, s = ts[0], ts[1]
+        
+        # Check if intersection is valid (on the edge and ray goes forward)
+        if 0 <= s <= 1 and t > 0:
+            return (t, s)
+        return None
+    except np.linalg.LinAlgError:
+        # Lines are parallel
+        return None
+
+
 def insert_contracting_vertices(
     cell: Cell,
     tissue: Tissue,
@@ -157,37 +197,30 @@ def insert_contracting_vertices(
             v1 = vertices[i]
             v2 = vertices[(i + 1) % len(vertices)]
             
-            # Solve for intersection: ray_origin + t * ray_dir = v1 + s * (v2 - v1)
-            # This is a 2D line-line intersection problem
-            edge_dir = v2 - v1
+            # Find ray-edge intersection
+            result = _find_ray_edge_intersection(ray_origin, ray_dir, v1, v2)
             
-            # Set up linear system: [ray_dir, -edge_dir] @ [t, s]^T = v1 - ray_origin
-            A = np.column_stack([ray_dir, -edge_dir])
-            b = v1 - ray_origin
-            
-            try:
-                # Solve for t and s
-                ts = np.linalg.solve(A, b)
-                t, s = ts[0], ts[1]
-                
-                # Check if intersection is valid (on the edge)
-                if 0 <= s <= 1 and t > 0:  # t > 0 means ray goes forward
-                    if best_t is None or t < best_t:
-                        best_t = t
-                        best_edge_idx = i
-            except np.linalg.LinAlgError:
-                # Lines are parallel, skip
-                continue
+            if result is not None:
+                t, s = result
+                if best_t is None or t < best_t:
+                    best_t = t
+                    best_edge_idx = i
         
         if best_t is not None and best_edge_idx is not None:
             intersection_point = ray_origin + best_t * ray_dir
             intersections.append((intersection_point, best_edge_idx))
     
     if len(intersections) != 2:
-        raise ValueError(
-            f"Could not find two intersections of division line with cell {cell.id} boundary. "
-            f"Found {len(intersections)} intersections."
+        # Provide debug information
+        debug_info = (
+            f"Cell {cell.id}: Found {len(intersections)} intersections "
+            f"(expected 2).\n"
+            f"  Division axis: {axis_direction}\n"
+            f"  Division line direction: {division_line_direction}\n"
+            f"  Centroid: {centroid}\n"
+            f"  Cell has {len(vertices)} vertices"
         )
+        raise ValueError(debug_info)
     
     # Sort intersections by edge index to maintain consistent ordering
     intersections.sort(key=lambda x: x[1])
