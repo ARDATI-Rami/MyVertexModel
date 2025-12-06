@@ -920,11 +920,11 @@ def mesh_edges(
             max_perimeter_change = max(max_perimeter_change, perim_change)
             if area_change > geometry_tol:
                 raise ValueError(
-                    f"Cell {cell.id} area change {area_change:.2e} exceeds tolerance."
+                    f"Cell {cell.id} area change {area_change:.2e} exceeds geometry tolerance {geometry_tol:.2e}."
                 )
             if perim_change > geometry_tol:
                 raise ValueError(
-                    f"Cell {cell.id} perimeter change {perim_change:.2e} exceeds tolerance."
+                    f"Cell {cell.id} perimeter change {perim_change:.2e} exceeds geometry tolerance {geometry_tol:.2e}."
                 )
 
     return {
