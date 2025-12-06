@@ -5,8 +5,8 @@ MyVertexModel: A vertex model simulation framework.
 __version__ = "0.1.0"
 
 from .core import Cell, Tissue
-from .core import EnergyParameters, cell_energy, tissue_energy, cell_energy_gradient_analytic
-from .core import merge_nearby_vertices, mesh_edges
+from .energy import EnergyParameters, cell_energy, tissue_energy, cell_energy_gradient_analytic
+from .mesh_ops import merge_nearby_vertices, mesh_edges
 from .geometry import GeometryCalculator
 from .simulation import (
     Simulation,
