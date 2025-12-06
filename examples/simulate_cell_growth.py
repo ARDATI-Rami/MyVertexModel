@@ -44,10 +44,8 @@ import numpy as np
 from myvertexmodel import Tissue, Simulation, EnergyParameters, GeometryCalculator, plot_tissue
 from myvertexmodel import load_tissue
 from myvertexmodel.simulation import OverdampedForceBalanceParams
-# Add import for merging
-from myvertexmodel.core import merge_nearby_vertices
-# Add import for meshing
-from myvertexmodel.core import mesh_edges
+# Import merge and mesh operations from package (re-exported from mesh_ops.py)
+from myvertexmodel import merge_nearby_vertices, mesh_edges
 from myvertexmodel import relabel_cells_alpha
 
 # Local helper to save and optionally show Matplotlib figures
