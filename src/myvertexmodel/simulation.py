@@ -5,7 +5,8 @@ Simulation engine for vertex model dynamics.
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Literal, Callable, Dict, Any
-from .core import Tissue, Cell, EnergyParameters, tissue_energy
+from .core import Tissue, Cell
+from .energy import EnergyParameters, tissue_energy
 from .geometry import GeometryCalculator
 
 
