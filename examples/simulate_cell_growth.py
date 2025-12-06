@@ -43,6 +43,7 @@ import random
 import numpy as np
 from myvertexmodel import Tissue, Cell, Simulation, EnergyParameters, GeometryCalculator, plot_tissue
 from myvertexmodel import load_tissue
+from myvertexmodel.simulation import OverdampedForceBalanceParams
 
 def compute_global_gradient(tissue: Tissue, energy_params: EnergyParameters,
                            geometry: GeometryCalculator, epsilon: float = 1e-6) -> np.ndarray:
@@ -276,6 +277,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Simulation parameters
     parser.add_argument("--epsilon", type=float, default=1e-6, help="Finite difference epsilon.")
     parser.add_argument("--damping", type=float, default=1.0, help="Damping factor for gradient descent.")
+    # Solver selection
+    parser.add_argument("--solver", type=str, choices=["gradient_descent", "overdamped_force_balance"], default="gradient_descent",
+                       help="Choose solver: 'gradient_descent' (default) or 'overdamped_force_balance' (OFB).")
+    # OFB parameters
+    parser.add_argument("--ofb-gamma", type=float, default=1.0, help="OFB friction coefficient γ (>0).")
+    parser.add_argument("--ofb-noise", type=float, default=0.0, help="OFB noise strength (>=0).")
+    parser.add_argument("--ofb-seed", type=int, default=None, help="OFB random seed for reproducibility.")
     return parser.parse_args(argv)
 
 
@@ -381,7 +389,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     
     # Define growth target for selected cell
     A_initial = initial_areas[growing_cell_id]
-    A_final = 2.0 * A_initial
+    A_final = 5.0 * A_initial
     growth_rate = (A_final - A_initial) / args.growth_steps
     
     print(f"\nGrowth configuration:")
@@ -402,23 +410,41 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     
     # Create simulation
-    sim = Simulation(
-        tissue=tissue,
-        dt=args.dt,
-        energy_params=energy_params,
-        epsilon=args.epsilon,
-        damping=args.damping
-    )
-    
+    if args.solver == "overdamped_force_balance":
+        ofb_params = OverdampedForceBalanceParams(
+            gamma=args.ofb_gamma,
+            noise_strength=args.ofb_noise,
+            random_seed=args.ofb_seed,
+        )
+        sim = Simulation(
+            tissue=tissue,
+            dt=args.dt,
+            energy_params=energy_params,
+            epsilon=args.epsilon,
+            damping=args.damping,  # not used in OFB solver
+            solver_type="overdamped_force_balance",
+            ofb_params=ofb_params,
+        )
+    else:
+        sim = Simulation(
+            tissue=tissue,
+            dt=args.dt,
+            energy_params=energy_params,
+            epsilon=args.epsilon,
+            damping=args.damping,
+            solver_type="gradient_descent",
+        )
+
     # Show initial tissue
     if args.plot:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3, show_cell_ids=True)
+            plot_tissue(tissue, ax=ax, show_vertices=False, fill=True, alpha=1, show_cell_ids=False, show_neighbor_counts=True)
             ax.set_title(f"Initial Tissue (Growing cell ID: {growing_cell_id})", fontsize=12, fontweight='bold')
             initial_plot_path = sim_folder / "growth_initial.png"
-            plt.savefig(str(initial_plot_path), dpi=150)
+            # Use same savefig options as final plot so both images have identical pixel size
+            plt.savefig(str(initial_plot_path), dpi=300, bbox_inches="tight")
             print(f"\nSaved initial tissue plot to {initial_plot_path}")
             plt.show()
             plt.close()
@@ -437,8 +463,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         csv_path = sim_folder / "growth_tracking.csv"
         csv_data.append(["step", "time", "growing_cell_area", "target_area", "total_energy", "progress_percent"])
     
-    # Simulation loop with growth using GLOBAL VERTEX POOL
-    print("\nStarting simulation with globally-coupled vertices...\n")
+    # Simulation loop
+    print("\nStarting simulation...\n")
     print(f"{'Step':>6} {'Time':>8} {'Area':>10} {'Target':>10} {'Progress':>8} {'Energy':>12}")
     print("-" * 65)
 
@@ -452,15 +478,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             # After growth phase, maintain final target
             target_areas[growing_cell_id] = A_final
         
-        # Compute gradient with respect to GLOBAL vertices
-        # This ensures shared vertices move consistently across all adjacent cells
-        gradient = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
-
-        # Update GLOBAL vertices using gradient descent
-        tissue.vertices = tissue.vertices - args.dt * args.damping * gradient
-
-        # Reconstruct per-cell vertices from global pool
-        tissue.reconstruct_cell_vertices()
+        if args.solver == "gradient_descent":
+            # Compute gradient with respect to GLOBAL vertices
+            gradient = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
+            # Update GLOBAL vertices using gradient descent
+            tissue.vertices = tissue.vertices - args.dt * args.damping * gradient
+            # Reconstruct per-cell vertices from global pool
+            tissue.reconstruct_cell_vertices()
+        else:
+            # Overdamped force-balance on GLOBAL vertex pool
+            # Forces from energy: F = -∇E (global gradient)
+            grad = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
+            forces = -grad
+            # Optional noise term (Gaussian, zero mean)
+            if args.ofb_noise and args.ofb_noise > 0.0:
+                noise = np.random.default_rng(args.ofb_seed).normal(loc=0.0, scale=args.ofb_noise, size=forces.shape)
+            else:
+                noise = 0.0
+            # Integrate: x <- x + (dt/gamma) * (F + noise)
+            tissue.vertices = tissue.vertices + (args.dt / max(args.ofb_gamma, 1e-12)) * (forces + noise)
+            # Reconstruct per-cell vertices
+            tissue.reconstruct_cell_vertices()
 
         # Advance time
         sim_time += args.dt
@@ -496,10 +534,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=0.3, show_cell_ids=True)
+            plot_tissue(tissue, ax=ax, show_vertices=False, fill=True, alpha=1, show_cell_ids=False, show_neighbor_counts=True)
             ax.set_title(f"Final Tissue (Cell {growing_cell_id} area: {final_area:.2f})", fontsize=12, fontweight='bold')
             final_plot_path = sim_folder / "growth_final.png"
-            plt.savefig(str(final_plot_path), dpi=150, bbox_inches='tight')
+            plt.savefig(str(final_plot_path), dpi=300, bbox_inches="tight")
             print(f"\nSaved final tissue plot to {final_plot_path}")
             plt.close()
         except Exception as e:
