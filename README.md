@@ -80,8 +80,8 @@ Simulate with ACAM tissue (requires smaller timestep):
 ```bash
 # ACAM tissue (~79 cells), use dt=0.0001 for stability
 python examples/simulate_cell_growth.py \
-  --tissue-file pickled_tissues/acam_79cells_repaired.dill \
-  --growing-cell-id 1 \
+  --tissue-file pickled_tissues/acam_79cells.dill \
+  --growing-cell-id 59 \
   --total-steps 100 \
   --dt 0.0001 \
   --plot
