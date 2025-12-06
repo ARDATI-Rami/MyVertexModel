@@ -374,12 +374,21 @@ python examples/diagnose_tissue.py pickled_tissues/acam_79cells.dill \
 # 4. Test simulation parameters
 python examples/diagnose_acam_simulation.py
 
-# 5. Run simulation with appropriate parameters
+# 5. Run simulation with appropriate parameters (single cell)
 python examples/simulate_cell_growth.py \
   --tissue-file pickled_tissues/acam_79cells_repaired.dill \
-  --dt 0.0001 \
+  --growing-cell-ids AR \
+  --dt 0.00001 \
   --total-steps 100 \
-  --plot
+  --plot --enable-merge
+
+# 6. Or run with multiple cells growing simultaneously
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells_repaired.dill \
+  --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL \
+  --dt 0.00001 \
+  --total-steps 100 \
+  --plot --enable-merge
 ```
 
 ## Troubleshooting
@@ -430,8 +439,10 @@ python examples/diagnose_acam_simulation.py
 # Use smaller timestep for ACAM tissues
 python examples/simulate_cell_growth.py \
   --tissue-file pickled_tissues/YOUR_TISSUE.dill \
-  --dt 0.0001 \
-  --total-steps 100
+  --growing-cell-ids AR \
+  --dt 0.00001 \
+  --total-steps 100 \
+  --enable-merge
 ```
 
 ### Import Errors
@@ -491,16 +502,25 @@ With gradient magnitude ~279 and dt=0.0001:
 # Test simulation parameters first
 python examples/diagnose_acam_simulation.py
 
-# Run with recommended parameters
+# Run with recommended parameters (single cell)
 python examples/simulate_cell_growth.py \
   --tissue-file pickled_tissues/acam_79cells_repaired.dill \
-  --growing-cell-id 1 \
+  --growing-cell-ids AR \
   --total-steps 100 \
-  --dt 0.0001 \
+  --dt 0.00001 \
   --damping 1.0 \
   --log-interval 10 \
-  --plot \
-  --save-csv acam_growth.csv
+  --plot --enable-merge
+
+# Run with multiple cells growing simultaneously
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells_repaired.dill \
+  --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL \
+  --total-steps 100 \
+  --dt 0.00001 \
+  --damping 1.0 \
+  --log-interval 10 \
+  --plot --enable-merge
 ```
 
 **Expected results:**
