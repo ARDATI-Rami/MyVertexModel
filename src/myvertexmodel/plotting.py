@@ -120,7 +120,6 @@ def plot_tissue(
                 fontsize=cell_id_fontsize,
                 ha="center",
                 va="center",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
                 zorder=4,
             )
 
