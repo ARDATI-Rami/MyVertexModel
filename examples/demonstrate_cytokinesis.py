@@ -22,6 +22,7 @@ from myvertexmodel import (
     perform_cytokinesis,
     compute_contractile_forces,
     check_constriction,
+    update_global_vertices_from_cells,
 )
 
 
@@ -65,7 +66,7 @@ def main():
     # Initiate cytokinesis
     print("2. Initiating cytokinesis (inserting contracting vertices)...")
     cyto_params = CytokinesisParams(
-        constriction_threshold=0.15,
+        constriction_threshold=0.5,  # Threshold for splitting
         initial_separation_fraction=0.9,
         contractile_force_magnitude=80.0
     )
@@ -113,14 +114,13 @@ def main():
     max_steps = 500
     step = 0
     while step < max_steps:
-        sim.run(n_steps=10)
-        step += 10
+        sim.run(n_steps=1)  # Run one step at a time
+        step += 1
         
-        # Update global vertices from local
-        tissue.build_global_vertices()
-        tissue.reconstruct_cell_vertices()
+        # Update global vertices from local (preserves indices)
+        update_global_vertices_from_cells(tissue)
         
-        # Check constriction
+        # Check constriction after each step
         if check_constriction(cell, tissue, cyto_params):
             print(f"   Cell constricted after {step} steps!")
             break

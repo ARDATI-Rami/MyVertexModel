@@ -386,7 +386,7 @@ def check_constriction(
     
     distance = np.linalg.norm(pos2 - pos1)
     
-    return distance < params.constriction_threshold
+    return distance <= params.constriction_threshold
 
 
 def split_cell(
@@ -431,14 +431,12 @@ def split_cell(
     # Ensure v1_local < v2_local for consistent ordering
     if v1_local > v2_local:
         v1_local, v2_local = v2_local, v1_local
-        v1_global, v2_global = v2_global, v1_global
     
     # Split the vertex indices into two groups
     # Daughter 1: vertices from v1 to v2 (inclusive)
     # Daughter 2: vertices from v2 to v1 (wrapping around, inclusive)
     
     indices = cell.vertex_indices
-    n = len(indices)
     
     # Daughter 1 gets vertices from v1_local to v2_local (inclusive)
     daughter1_indices = indices[v1_local:v2_local + 1]
@@ -488,6 +486,31 @@ def split_cell(
     tissue.add_cell(daughter2)
     
     return daughter1, daughter2
+
+
+def update_global_vertices_from_cells(tissue: Tissue) -> None:
+    """Update global vertex pool from cell vertices without rebuilding indices.
+    
+    This preserves the global vertex indices while updating their positions
+    based on the current cell.vertices arrays. Useful during simulation to
+    maintain consistent vertex tracking.
+    
+    Args:
+        tissue: Tissue with global vertex pool and cells with vertex_indices.
+        
+    Notes:
+        - Requires tissue.vertices and cell.vertex_indices to be already populated
+        - Updates tissue.vertices in place based on cell.vertices
+        - Does NOT change vertex_indices (preserves connectivity)
+    """
+    if tissue.vertices.shape[0] == 0:
+        return
+    
+    # For each cell, update the global vertices based on cell's local vertices
+    for cell in tissue.cells:
+        if cell.vertex_indices.shape[0] > 0 and cell.vertices.shape[0] > 0:
+            # Update global vertices from this cell's local vertices
+            tissue.vertices[cell.vertex_indices] = cell.vertices
 
 
 def perform_cytokinesis(

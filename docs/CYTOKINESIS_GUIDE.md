@@ -74,6 +74,7 @@ from myvertexmodel import (
     compute_contractile_forces,
     check_constriction,
     split_cell,
+    update_global_vertices_from_cells,
 )
 
 # 1. Compute division axis
@@ -88,6 +89,10 @@ v1_idx, v2_idx = insert_contracting_vertices(
 
 # 3. During simulation, compute contractile forces
 forces = compute_contractile_forces(cell, tissue, params)
+
+# After each simulation step, update global vertices
+# (preserves vertex indices, unlike build_global_vertices)
+update_global_vertices_from_cells(tissue)
 
 # 4. Check if ready to split
 if check_constriction(cell, tissue, params):
@@ -133,8 +138,14 @@ sim = Simulation(
 )
 
 # Run simulation with contractile forces
-sim.run(n_steps=100)
+sim.run(n_steps=1)
+
+# IMPORTANT: Update global vertices to preserve indices
+from myvertexmodel import update_global_vertices_from_cells
+update_global_vertices_from_cells(tissue)
 ```
+
+**Note**: When using cytokinesis during simulation, you must call `update_global_vertices_from_cells(tissue)` after each simulation step to update the global vertex positions while preserving the vertex indices. Do NOT use `tissue.build_global_vertices()` as it will rebuild indices and break the tracking of contracting vertices.
 
 ## Complete Example
 
@@ -156,7 +167,7 @@ tissue.build_global_vertices()
 
 # Set up cytokinesis
 params = CytokinesisParams(
-    constriction_threshold=0.15,
+    constriction_threshold=0.5,  # Adjust based on cell size and forces
     contractile_force_magnitude=80.0
 )
 

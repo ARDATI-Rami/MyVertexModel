@@ -27,6 +27,7 @@ from .cytokinesis import (
     check_constriction,
     split_cell,
     perform_cytokinesis,
+    update_global_vertices_from_cells,
 )
 
 __all__ = [
@@ -63,4 +64,5 @@ __all__ = [
     "check_constriction",
     "split_cell",
     "perform_cytokinesis",
+    "update_global_vertices_from_cells",
 ]

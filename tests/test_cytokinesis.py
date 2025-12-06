@@ -7,7 +7,6 @@ import numpy as np
 from myvertexmodel import (
     Cell,
     Tissue,
-    GeometryCalculator,
     CytokinesisParams,
     compute_division_axis,
     insert_contracting_vertices,
@@ -15,9 +14,6 @@ from myvertexmodel import (
     check_constriction,
     split_cell,
     perform_cytokinesis,
-    EnergyParameters,
-    Simulation,
-    OverdampedForceBalanceParams,
 )
 
 
@@ -333,11 +329,6 @@ def test_cytokinesis_with_simulation():
     assert result['stage'] == 'initiated'
     v1_idx, v2_idx = result['contracting_vertices']
     
-    # Get initial distance
-    initial_distance = np.linalg.norm(
-        tissue.vertices[v1_idx] - tissue.vertices[v2_idx]
-    )
-    
     # Test that we can compute contractile forces
     forces = compute_contractile_forces(cell, tissue, params)
     assert forces.shape == cell.vertices.shape
@@ -384,7 +375,7 @@ def test_cytokinesis_validates_small_cell():
     
     # Try to insert contracting vertices
     # This might work (triangle -> pentagon)
-    v1_idx, v2_idx = insert_contracting_vertices(cell, tissue)
+    insert_contracting_vertices(cell, tissue)
     
     # But splitting might fail if daughters would have < 3 vertices
     # This depends on where the contracting vertices are inserted
