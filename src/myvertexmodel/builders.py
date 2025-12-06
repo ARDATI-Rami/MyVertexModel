@@ -20,7 +20,7 @@ boundary conditions, or loading from external geometry specs.
 """
 from __future__ import annotations
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 from .core import Tissue, Cell
 
 __all__ = [
@@ -198,3 +198,48 @@ def build_honeycomb_3_4_5_4_3(hex_size: float = 1.0) -> Tissue:
         tissue.add_cell(Cell(cell_id=cid, vertices=verts))
     return tissue
 
+
+def _number_to_alpha_label(n: int) -> str:
+    """Convert a positive integer to an Excel-style alphabetic label (1->A, 26->Z, 27->AA)."""
+    if n < 1:
+        raise ValueError("Cell ID must be a positive integer to convert to alphabetic label")
+    label = []
+    while n > 0:
+        n -= 1
+        n, rem = divmod(n, 26)
+        label.append(chr(ord('A') + rem))
+    return ''.join(reversed(label))
+
+
+def relabel_cells_alpha(tissue: "Tissue", by_order: bool = False) -> None:
+    """Relabel tissue cells from numeric IDs to alphabetic labels in-place.
+
+    Defaults to converting each numeric cell.id to an Excel-style label.
+    If by_order=True, labels are assigned by sorted order of current cell IDs
+    starting at 1.
+
+    Example:
+        - IDs: [1,2,3] -> ['A','B','C']
+        - IDs: [10, 26, 27] -> ['J','Z','AA'] (by numeric conversion)
+        - by_order: IDs sorted then relabeled 1..N -> A.. ; ignores original magnitudes.
+
+    Args:
+        tissue: Tissue whose cells will be relabeled.
+        by_order: If True, assign labels by sorted order instead of direct numeric conversion.
+    """
+    # Lazy import to avoid circulars
+    from .core import Tissue
+    if not isinstance(tissue, Tissue):
+        raise TypeError("relabel_cells_alpha expects a Tissue instance")
+
+    if by_order:
+        sorted_cells = sorted(tissue.cells, key=lambda c: c.id)
+        for i, cell in enumerate(sorted_cells, start=1):
+            cell.id = _number_to_alpha_label(i)
+    else:
+        for cell in tissue.cells:
+            try:
+                n = int(cell.id)
+            except Exception as e:
+                raise ValueError(f"Cell ID '{cell.id}' is not convertible to int for alpha relabeling: {e}")
+            cell.id = _number_to_alpha_label(n)
