@@ -268,7 +268,12 @@ def _build_tissue_from_cell_data(
             radius=approx_radius,
             n_sides=vertex_count,
         )
-        tissue.add_cell(Cell(cell_id=cell_data["id"], vertices=vertices, label=str(cell_data.get("identifier", cell_data["id"]))))
+        cell = Cell(cell_id=cell_data["id"], vertices=vertices)
+        # Store ACAM identifier as a custom attribute for later use
+        identifier = cell_data.get("identifier")
+        if identifier:
+            cell.acam_identifier = str(identifier)
+        tissue.add_cell(cell)
 
     # Merge vertices within adhesion distance to create global vertex pool
     tissue.build_global_vertices(tol=adhesion_distance)
