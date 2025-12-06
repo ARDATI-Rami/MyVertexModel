@@ -112,6 +112,50 @@ Where:
 - Timestep requirements: ACAM tissues (~79 cells) need dt≈0.0001; Honeycomb (~14 cells) can use dt≈0.01
 - Known validation requirement: ACAM tissues should be validated for duplicate consecutive vertices post-conversion
 
+## 5.1 Cell Growth Simulation
+
+The `examples/simulate_cell_growth.py` script provides a complete simulation framework for studying cell growth in vertex model tissues.
+
+**Features:**
+- **Single or multi-cell growth**: Grow one cell or multiple cells simultaneously using comma-separated IDs
+- **Gradual target area increase**: Cells grow from initial area to 2× initial area over configurable steps
+- **Global vertex coupling**: Shared vertices move consistently across all cells
+- **Two solver options**: Gradient descent or overdamped force-balance (OFB)
+- **Vertex merging**: Optional periodic merging of nearby vertices during simulation
+- **Edge meshing**: Optional edge subdivision for finer mesh resolution
+
+**Usage Examples:**
+```bash
+# Single cell growth (honeycomb)
+python examples/simulate_cell_growth.py --growing-cell-ids 7 --plot
+
+# Multiple cells (honeycomb)
+python examples/simulate_cell_growth.py --growing-cell-ids 3,7,10 --plot
+
+# Multiple cells (ACAM tissue)
+python examples/simulate_cell_growth.py \
+  --tissue-file pickled_tissues/acam_79cells.dill \
+  --growing-cell-ids I,AW,AB,AA,V,BF,AV,BR,AL \
+  --total-steps 100 --dt 0.00001 --plot --enable-merge
+```
+
+**Output:**
+- Creates `Sim_<tissue>_<cells>_<timestamp>/` folder
+- `growth_tracking.csv`: Per-step data (area, target, progress) for each growing cell
+- `growth_initial.png` and `growth_final.png`: Tissue visualizations
+
+**Key Command-Line Options:**
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--growing-cell-ids` | Comma-separated cell IDs to grow | `7` |
+| `--tissue-file` | Path to tissue file (.dill) | builds honeycomb |
+| `--total-steps` | Total simulation steps | `200` |
+| `--growth-steps` | Steps to ramp target area | `100` |
+| `--dt` | Time step size | `0.01` |
+| `--solver` | `gradient_descent` or `overdamped_force_balance` | `gradient_descent` |
+| `--enable-merge` | Enable vertex merging | disabled |
+| `--plot` | Show/save tissue plots | disabled |
+
 ## 6. Reference Implementation Considerations
 - Numerical stability: energy gradients may require damping or adaptive dt.
 - Consistency: shared vertices must update all incident cells deterministically.
