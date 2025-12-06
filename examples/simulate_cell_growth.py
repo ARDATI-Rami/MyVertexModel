@@ -41,9 +41,34 @@ from collections import defaultdict
 from datetime import datetime
 import random
 import numpy as np
-from myvertexmodel import Tissue, Cell, Simulation, EnergyParameters, GeometryCalculator, plot_tissue
+from myvertexmodel import Tissue, Simulation, EnergyParameters, GeometryCalculator, plot_tissue
 from myvertexmodel import load_tissue
 from myvertexmodel.simulation import OverdampedForceBalanceParams
+# Add import for merging
+from myvertexmodel.core import merge_nearby_vertices
+# Add import for meshing
+from myvertexmodel.core import mesh_edges
+from myvertexmodel import relabel_cells_alpha
+
+# Local helper to save and optionally show Matplotlib figures
+def _save_plot(fig, path: Path, show: bool = True) -> None:
+    """Save a Matplotlib figure to disk and optionally display it.
+
+    Args:
+        fig: Matplotlib figure object.
+        path: Destination path for the image file.
+        show: If True, display the plot with plt.show().
+    """
+    import matplotlib.pyplot as plt
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, bbox_inches="tight")
+        if show:
+            plt.show()
+    finally:
+        plt.close(fig)
+
 
 def compute_global_gradient(tissue: Tissue, energy_params: EnergyParameters,
                            geometry: GeometryCalculator, epsilon: float = 1e-6) -> np.ndarray:
@@ -262,8 +287,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                        help="Path to tissue file (optional if using --build-honeycomb).")
     parser.add_argument("--build-honeycomb", type=str, choices=['14', '19'], default='14',
                        help="Build honeycomb tissue on-the-fly: '14' for 2-3-4-3-2 (default), '19' for 3-4-5-4-3.")
-    parser.add_argument("--growing-cell-id", type=int, default=7,
-                       help="Cell ID to grow.")
+    parser.add_argument("--growing-cell-id", type=str, default="7",
+                       help="Cell ID to grow (accepts numeric or alphabetic labels).")
     parser.add_argument("--growth-steps", type=int, default=100, help="Steps to ramp up target area.")
     parser.add_argument("--total-steps", type=int, default=200, help="Total simulation steps.")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size.")
@@ -284,6 +309,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--ofb-gamma", type=float, default=1.0, help="OFB friction coefficient γ (>0).")
     parser.add_argument("--ofb-noise", type=float, default=0.0, help="OFB noise strength (>=0).")
     parser.add_argument("--ofb-seed", type=int, default=None, help="OFB random seed for reproducibility.")
+    # Vertex merging options
+    parser.add_argument("--enable-merge", action="store_true", help="Enable periodic merging of nearby vertices during simulation.")
+    parser.add_argument("--merge-distance-tol", type=float, default=1e-1, help="Distance tolerance for merging nearby vertices.")
+    parser.add_argument("--merge-energy-tol", type=float, default=1e-1, help="Max allowed energy change due to merge.")
+    parser.add_argument("--merge-geometry-tol", type=float, default=1e0, help="Max allowed per-cell area/perimeter change due to merge.")
+    parser.add_argument("--merge-interval", type=int, default=10, help="Merge every N steps (if enabled).")
+    # Meshing options
+    parser.add_argument("--mesh-mode", type=str, choices=["none", "low", "medium", "high"], default="none", help="Edge meshing mode to apply at start: none|low|medium|high.")
+    parser.add_argument("--mesh-length-scale", type=float, default=1.0, help="Base length scale used by meshing (medium/high).")
+    # Dynamic meshing options
+    parser.add_argument("--enable-mesh-dynamic", action="store_true", help="Enable periodic dynamic meshing during simulation.")
+    parser.add_argument("--mesh-interval", type=int, default=10, help="Apply meshing every N steps when enabled.")
+    # Relabel cells to alphabetic IDs (single-mode argument)
+    parser.add_argument("--relabel-alpha-mode", type=str, choices=["direct", "order"], default=None,
+                       help="Relabel cell IDs to alphabetic labels: 'direct' converts each numeric ID (1->A), 'order' assigns labels by sorted order (1..N->A..).")
     return parser.parse_args(argv)
 
 
@@ -358,21 +398,48 @@ def main(argv: Optional[List[str]] = None) -> int:
     # After loading, cell.vertices may be out of sync with tissue.vertices[cell.vertex_indices]
     tissue.reconstruct_cell_vertices()
 
+    # Optional: relabel cell IDs to alphabetic
+    if args.relabel_alpha_mode is not None:
+        print(f"\nRelabeling cell IDs to alphabetic labels (mode={args.relabel_alpha_mode})...")
+        try:
+            relabel_cells_alpha(tissue, by_order=(args.relabel_alpha_mode == "order"))
+            print(f"[relabel] Applied alphabetic labels (mode={args.relabel_alpha_mode})")
+        except Exception as e:
+            print(f"[relabel] skipped: {e}")
+
     print(f"Loaded {len(tissue.cells)} cells from tissue")
     print(f"  Global vertices: {tissue.vertices.shape[0]} unique positions")
 
     geometry = GeometryCalculator()
-    
+
     # Find growing cell by ID
     growing_cell = None
+    # Normalize provided ID
+    provided_id = args.growing_cell_id
+    # Try to match by exact string first; if numeric, also match integer IDs
     for cell in tissue.cells:
-        if cell.id == args.growing_cell_id:
+        if str(cell.id) == provided_id:
             growing_cell = cell
             break
+    if growing_cell is None:
+        # Fallback: if provided_id looks like an int, compare against int(cell.id) if possible
+        try:
+            pid_int = int(provided_id)
+        except Exception:
+            pid_int = None
+        if pid_int is not None:
+            for cell in tissue.cells:
+                try:
+                    if int(cell.id) == pid_int:
+                        growing_cell = cell
+                        break
+                except Exception:
+                    continue
 
     if growing_cell is None:
         print(f"\nError: Cell with ID '{args.growing_cell_id}' not found!")
-        print(f"Available cell IDs: {sorted([c.id for c in tissue.cells])}")
+        print(f"Available cell IDs: {sorted([str(c.id) for c in tissue.cells])}")
+
         return 1
 
     growing_cell_id = growing_cell.id
@@ -383,15 +450,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     initial_areas = {}
     for cell in tissue.cells:
         initial_areas[cell.id] = geometry.calculate_area(cell.vertices)
-    
+
     # Set up per-cell target areas (initially equal to actual areas for equilibrium)
     target_areas = initial_areas.copy()
-    
+
     # Define growth target for selected cell
     A_initial = initial_areas[growing_cell_id]
-    A_final = 5.0 * A_initial
+    A_final = 2.0 * A_initial
     growth_rate = (A_final - A_initial) / args.growth_steps
-    
+
     print(f"\nGrowth configuration:")
     print(f"  Tissue: {len(tissue.cells)} cells")
     print(f"  Growing cell ID: {growing_cell_id}")
@@ -408,7 +475,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         gamma=args.gamma,
         target_area=target_areas  # dict instead of float
     )
-    
+
+    # Optional meshing at the beginning (after energy_params are defined)
+    if args.mesh_mode and args.mesh_mode != "none":
+        try:
+            mstats = mesh_edges(
+                tissue,
+                mode=args.mesh_mode,
+                length_scale=args.mesh_length_scale,
+                energy_tol=1e-10,
+                geometry_tol=1e-10,
+                energy_params=energy_params,
+            )
+            print(
+                f"[mesh] mode={mstats['mode']} edges_subdivided={mstats['edges_subdivided']} "
+                f"verts {mstats['vertices_before']} -> {mstats['vertices_after']} "
+                f"dE={mstats['energy_change']:.2e} dA_max={mstats['max_area_change']:.2e} dP_max={mstats['max_perimeter_change']:.2e}"
+            )
+        except ValueError as e:
+            print(f"[mesh] skipped: {e}")
+
     # Create simulation
     if args.solver == "overdamped_force_balance":
         ofb_params = OverdampedForceBalanceParams(
@@ -440,14 +526,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=False, fill=True, alpha=1, show_cell_ids=False, show_neighbor_counts=True)
+            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
             ax.set_title(f"Initial Tissue (Growing cell ID: {growing_cell_id})", fontsize=12, fontweight='bold')
             initial_plot_path = sim_folder / "growth_initial.png"
-            # Use same savefig options as final plot so both images have identical pixel size
-            plt.savefig(str(initial_plot_path), dpi=300, bbox_inches="tight")
+            _save_plot(fig, initial_plot_path, show=True)
             print(f"\nSaved initial tissue plot to {initial_plot_path}")
-            plt.show()
-            plt.close()
         except Exception as e:
             print(f"Initial plot failed: {e}")
     
@@ -500,6 +583,44 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Reconstruct per-cell vertices
             tissue.reconstruct_cell_vertices()
 
+        # Periodic vertex merging (optional)
+        if args.enable_merge and args.merge_interval > 0 and (step % args.merge_interval == 0):
+            try:
+                stats = merge_nearby_vertices(
+                    tissue,
+                    distance_tol=args.merge_distance_tol,
+                    energy_tol=args.merge_energy_tol,
+                    geometry_tol=args.merge_geometry_tol,
+                    energy_params=energy_params,
+                )
+                if stats.get("clusters_merged", 0) > 0:
+                    print(
+                        f"[merge] step={step} clusters={stats['clusters_merged']} verts {stats['vertices_before']} -> {stats['vertices_after']} "
+                        f"dE={stats['energy_change']:.2e} dA_max={stats['max_area_change']:.2e} dP_max={stats['max_perimeter_change']:.2e}"
+                    )
+            except ValueError as e:
+                print(f"[merge] step={step} skipped: {e}")
+
+        # Periodic dynamic meshing (optional)
+        if args.enable_mesh_dynamic and args.mesh_interval > 0 and (step % args.mesh_interval == 0) and args.mesh_mode != "none":
+            try:
+                mstats = mesh_edges(
+                    tissue,
+                    mode=args.mesh_mode,
+                    length_scale=args.mesh_length_scale,
+                    energy_tol=1e-10,
+                    geometry_tol=1e-10,
+                    energy_params=energy_params,
+                )
+                if mstats.get("edges_subdivided", 0) > 0:
+                    print(
+                        f"[mesh] step={step} mode={mstats['mode']} edges_subdivided={mstats['edges_subdivided']} "
+                        f"verts {mstats['vertices_before']} -> {mstats['vertices_after']} "
+                        f"dE={mstats['energy_change']:.2e} dA_max={mstats['max_area_change']:.2e} dP_max={mstats['max_perimeter_change']:.2e}"
+                    )
+            except ValueError as e:
+                print(f"[mesh] step={step} skipped: {e}")
+
         # Advance time
         sim_time += args.dt
 
@@ -534,12 +655,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
-            plot_tissue(tissue, ax=ax, show_vertices=False, fill=True, alpha=1, show_cell_ids=False, show_neighbor_counts=True)
+            plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
             ax.set_title(f"Final Tissue (Cell {growing_cell_id} area: {final_area:.2f})", fontsize=12, fontweight='bold')
             final_plot_path = sim_folder / "growth_final.png"
-            plt.savefig(str(final_plot_path), dpi=300, bbox_inches="tight")
+            _save_plot(fig, final_plot_path, show=True)
             print(f"\nSaved final tissue plot to {final_plot_path}")
-            plt.close()
         except Exception as e:
             print(f"Final plot failed: {e}")
     
@@ -557,6 +677,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  Contents:")
     for file in sorted(sim_folder.iterdir()):
         print(f"    - {file.name}")
+
+    # Final matplotlib cleanup to ensure no figures remain open
+    try:
+        import matplotlib.pyplot as plt
+        plt.close('all')
+    except Exception:
+        pass
 
     return 0
 
