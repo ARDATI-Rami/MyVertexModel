@@ -145,6 +145,9 @@ def insert_contracting_vertices(
     division axis. These vertices will be the attachment points for the
     contractile ring.
     
+    IMPORTANT: This function also updates neighboring cells that share the
+    edges where the new vertices are inserted, maintaining tissue connectivity.
+
     Args:
         cell: Cell to prepare for division.
         tissue: Tissue containing the cell.
@@ -234,6 +237,12 @@ def insert_contracting_vertices(
     point1_initial = centroid + sep_frac * (point1 - centroid)
     point2_initial = centroid + sep_frac * (point2 - centroid)
     
+    # Get the edge endpoints (global indices) for finding neighbors
+    edge1_v1_global = cell.vertex_indices[edge_idx1]
+    edge1_v2_global = cell.vertex_indices[(edge_idx1 + 1) % len(cell.vertex_indices)]
+    edge2_v1_global = cell.vertex_indices[edge_idx2]
+    edge2_v2_global = cell.vertex_indices[(edge_idx2 + 1) % len(cell.vertex_indices)]
+
     # Add new vertices to global pool
     new_vertex_idx1 = tissue.vertices.shape[0]
     tissue.vertices = np.vstack([tissue.vertices, point1_initial])
@@ -278,6 +287,59 @@ def insert_contracting_vertices(
     # Reconstruct cell vertices
     cell.vertices = tissue.vertices[cell.vertex_indices]
     
+    # Update neighboring cells that share the edges where we inserted vertices
+    # For each edge (v1, v2), find neighbor cells that have both v1 and v2 in their vertex_indices
+    # and insert the new vertex between them
+    for other_cell in tissue.cells:
+        if other_cell.id == cell.id:
+            continue
+
+        other_indices = list(other_cell.vertex_indices)
+        modified = False
+
+        # Check if this cell shares edge 1 (edge1_v1_global -> edge1_v2_global)
+        # In the neighbor, the edge will be in reverse order: edge1_v2_global -> edge1_v1_global
+        if edge1_v1_global in other_indices and edge1_v2_global in other_indices:
+            idx_v1 = other_indices.index(edge1_v1_global)
+            idx_v2 = other_indices.index(edge1_v2_global)
+            n = len(other_indices)
+
+            # Check if they are adjacent (the edge exists in this cell)
+            # In neighbor cell, edge is reversed: v2 -> v1 (or cyclically adjacent)
+            if (idx_v2 + 1) % n == idx_v1:
+                # Edge exists as v2 -> v1, insert new vertex after v2
+                insert_pos = idx_v2 + 1
+                other_indices.insert(insert_pos, new_vertex_idx1)
+                modified = True
+            elif (idx_v1 + 1) % n == idx_v2:
+                # Edge exists as v1 -> v2 (same direction as dividing cell - shouldn't happen for shared edge)
+                # But handle it anyway - insert after v1
+                insert_pos = idx_v1 + 1
+                other_indices.insert(insert_pos, new_vertex_idx1)
+                modified = True
+
+        # Check if this cell shares edge 2 (edge2_v1_global -> edge2_v2_global)
+        if edge2_v1_global in other_indices and edge2_v2_global in other_indices:
+            idx_v1 = other_indices.index(edge2_v1_global)
+            idx_v2 = other_indices.index(edge2_v2_global)
+            n = len(other_indices)
+
+            # Check if they are adjacent
+            if (idx_v2 + 1) % n == idx_v1:
+                # Edge exists as v2 -> v1, insert new vertex after v2
+                insert_pos = idx_v2 + 1
+                other_indices.insert(insert_pos, new_vertex_idx2)
+                modified = True
+            elif (idx_v1 + 1) % n == idx_v2:
+                # Edge exists as v1 -> v2
+                insert_pos = idx_v1 + 1
+                other_indices.insert(insert_pos, new_vertex_idx2)
+                modified = True
+
+        if modified:
+            other_cell.vertex_indices = np.array(other_indices, dtype=int)
+            other_cell.vertices = tissue.vertices[other_cell.vertex_indices]
+
     # Store metadata about contracting vertices in cell
     if not hasattr(cell, 'cytokinesis_data'):
         cell.cytokinesis_data = {}
