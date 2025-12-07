@@ -85,9 +85,10 @@ Where:
 6. ✅ ACAM tissue import: Topology-aware converter from ACAM center-based models
 7. ✅ Validation tools: Cell-by-cell validation, polygon validity checks, duplicate vertex detection
 8. ✅ Visualization: Enhanced plotting with cell/vertex ID labels
+9. ✅ Cytokinesis (cell division): Contracting vertices, active forces, topological splitting - in `cytokinesis.py`
 
 **Future work:**
-- Topological events: T1 transitions (edge swaps), cell division (vertex insertion), apoptosis/extrusion
+- Additional topological events: T1 transitions (edge swaps), apoptosis/extrusion
 - Adaptive timestep based on gradient magnitude
 - Per-edge heterogeneous tension (currently uniform γ)
 - Cached geometry computations for performance
@@ -103,6 +104,7 @@ Where:
 - `GeometryCalculator`: Area, perimeter, centroid calculations with polygon validation - in `geometry.py`
 - Global vertex pool: `build_global_vertices()` and `reconstruct_cell_vertices()` fully operational - in `core.py`
 - Tissue builders: `build_grid_tissue()`, `build_honeycomb_2_3_4_3_2()`, `build_honeycomb_3_4_5_4_3()` - in `builders.py`
+- **Cytokinesis**: Complete cell division with contracting vertices, active forces, and topological splitting - in `cytokinesis.py`
 - ACAM importer: `convert_acam_with_topology()` with neighbor topology awareness - in `acam_importer.py`
 - Validation: `validate()` method, polygon validity checks, CCW ordering enforcement - in `core.py` and `geometry.py`
 

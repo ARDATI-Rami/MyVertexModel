@@ -5,6 +5,7 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
 - **Complete energy functional** with area elasticity, perimeter contractility, and line (junction) tension terms
 - **Gradient descent simulation** with global vertex coupling for mechanical equilibration
 - **Global vertex pool** with automatic merging and reconstruction capabilities
+- **Cell division (cytokinesis)** with contractile ring simulation and topological splitting
 - **ACAM tissue import** with topology-aware conversion from center-based models
 - **Cell growth simulation** with configurable parameters and organized output folders
 - **Comprehensive validation tools** for tissue structure integrity
@@ -21,6 +22,14 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
 - **Gradient computation**: Central finite differences + analytical gradient implementation
 - **Simulation engine**: Configurable timestep, damping, and epsilon parameters
 - **Validation suite**: Polygon validity, CCW ordering, duplicate vertex detection
+
+### Topological Transitions
+- **Cytokinesis (cell division)**: Complete implementation with:
+  - Automatic or manual division axis computation
+  - Contracting vertices simulating actomyosin ring
+  - Active contractile forces integrated with simulation
+  - Topological splitting into daughter cells
+  - See `docs/CYTOKINESIS_GUIDE.md` for detailed documentation
 
 ### Tissue Building & Import
 - **Honeycomb builders**: 14-cell (2-3-4-3-2) and 19-cell (3-4-5-4-3) patterns
@@ -62,6 +71,23 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
   - Visualization of connectivity issues
 
 ## Quick Start
+
+### Cell Division (Cytokinesis)
+
+Simulate cell division with contractile ring constriction:
+
+```bash
+# Run the cytokinesis demonstration
+python examples/demonstrate_cytokinesis.py
+```
+
+This example shows:
+1. A single cell with contracting vertices inserted at the division line
+2. Simulation with active contractile forces (actomyosin ring)
+3. Constriction of the division plane
+4. Topological splitting into two daughter cells
+
+See `docs/CYTOKINESIS_GUIDE.md` for detailed API documentation and examples.
 
 ### Cell Growth Simulation
 
@@ -381,12 +407,20 @@ Sim_*/                             # Simulation output folders (gitignored)
 
 ## Future Development
 
+### Implemented Features
+
+1. ✅ **Cell division (cytokinesis)**:
+   - Contracting vertices simulating actomyosin ring
+   - Active contractile forces integrated with simulation
+   - Topological splitting into daughter cells
+   - See `docs/CYTOKINESIS_GUIDE.md`
+
 ### Planned Features
 
-1. **Topological transitions**: 
+1. **Additional topological transitions**: 
    - T1 transitions (edge swaps for neighbor rearrangement)
-   - Cell division (vertex insertion and polygon splitting)
    - Cell extrusion/apoptosis (polygon removal)
+   - Automated multi-cell division cascades
 
 2. **Adaptive simulation**:
    - Adaptive timestep based on gradient magnitude
