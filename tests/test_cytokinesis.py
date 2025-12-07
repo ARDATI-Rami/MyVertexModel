@@ -432,3 +432,129 @@ def test_split_cell_error_without_metadata():
     
     with pytest.raises(ValueError, match="does not have contracting vertices"):
         split_cell(cell, tissue)
+
+
+def test_insert_contracting_vertices_updates_neighbors():
+    """Test that inserting contracting vertices also updates neighboring cells.
+
+    When contracting vertices are inserted on edges shared with neighbor cells,
+    those neighbors must also have their vertex_indices updated to include the
+    new vertices, maintaining tissue connectivity.
+    """
+    from myvertexmodel import build_honeycomb_2_3_4_3_2
+
+    # Build honeycomb tissue where cells share edges
+    tissue = build_honeycomb_2_3_4_3_2()
+    tissue.build_global_vertices(tol=1e-10)
+    tissue.reconstruct_cell_vertices()
+
+    # Find cell 7 (center cell with 6 neighbors)
+    cell7 = None
+    for c in tissue.cells:
+        if c.id == 7:
+            cell7 = c
+            break
+    assert cell7 is not None
+
+    # Record neighbor counts before
+    neighbor_counts_before = tissue.cell_neighbor_counts()
+
+    # Get original vertex count for cell 7 and its neighbors
+    original_cell7_verts = len(cell7.vertex_indices)
+    neighbors_before = {}
+    for c in tissue.cells:
+        if c.id != 7:
+            neighbors_before[c.id] = len(c.vertex_indices)
+
+    # Insert contracting vertices
+    params = CytokinesisParams()
+    v1_idx, v2_idx = insert_contracting_vertices(cell7, tissue, axis_angle=None, params=params)
+
+    # Cell 7 should have 2 more vertices
+    assert len(cell7.vertex_indices) == original_cell7_verts + 2
+
+    # Check that contracting vertices are in cell 7
+    assert v1_idx in cell7.vertex_indices
+    assert v2_idx in cell7.vertex_indices
+
+    # The new vertices should also be in some neighbor cells
+    # (those that share the edges where vertices were inserted)
+    neighbors_with_new_vertex = []
+    for c in tissue.cells:
+        if c.id == 7:
+            continue
+        if v1_idx in c.vertex_indices:
+            neighbors_with_new_vertex.append((c.id, v1_idx))
+        if v2_idx in c.vertex_indices:
+            neighbors_with_new_vertex.append((c.id, v2_idx))
+
+    # At least 2 neighbor cells should have been updated (one for each contracting vertex)
+    # (each contracting vertex is on an edge shared with one neighbor)
+    assert len(neighbors_with_new_vertex) >= 2, (
+        f"Expected at least 2 neighbor cells to contain new vertices, "
+        f"but found: {neighbors_with_new_vertex}"
+    )
+
+    # Validate tissue is still consistent
+    tissue.validate()
+
+    # Verify connectivity is maintained - neighbors of cell 7 should still be neighbors
+    # (The new vertices should not break any edges)
+    neighbor_counts_after = tissue.cell_neighbor_counts()
+    assert neighbor_counts_after[7] == neighbor_counts_before[7], (
+        f"Cell 7 neighbor count changed from {neighbor_counts_before[7]} to {neighbor_counts_after[7]}"
+    )
+
+
+def test_insert_contracting_vertices_with_two_adjacent_cells():
+    """Test contracting vertex insertion with a minimal case of two adjacent cells."""
+    # Create two cells sharing an edge
+    cell1_verts = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell2_verts = np.array([[1, 0], [2, 0], [2, 1], [1, 1]], dtype=float)
+
+    cell1 = Cell(cell_id=1, vertices=cell1_verts)
+    cell2 = Cell(cell_id=2, vertices=cell2_verts)
+
+    tissue = Tissue()
+    tissue.add_cell(cell1)
+    tissue.add_cell(cell2)
+    tissue.build_global_vertices(tol=1e-8)
+    tissue.reconstruct_cell_vertices()
+
+    # Record shared edge vertices
+    cell1_indices_before = set(cell1.vertex_indices)
+    cell2_indices_before = set(cell2.vertex_indices)
+    shared_before = cell1_indices_before & cell2_indices_before
+
+    # Cell 1 and 2 should share 2 vertices (the shared edge)
+    assert len(shared_before) == 2
+
+    # Insert contracting vertices into cell 1 with horizontal division
+    # This should intersect the shared edge with cell 2
+    params = CytokinesisParams()
+    v1_idx, v2_idx = insert_contracting_vertices(cell1, tissue, axis_angle=0.0, params=params)
+
+    # Determine which new vertex is on the shared edge
+    # by checking if it falls between the shared edge endpoints
+    shared_edge_vertex = None
+    for new_v in [v1_idx, v2_idx]:
+        new_pos = tissue.vertices[new_v]
+        # The shared edge is at x=1, y between 0 and 1
+        if abs(new_pos[0] - 1.0) < 0.5:  # Close to x=1
+            shared_edge_vertex = new_v
+            break
+
+    # If a vertex was inserted on the shared edge, cell 2 should have it
+    if shared_edge_vertex is not None:
+        if shared_edge_vertex not in cell2.vertex_indices:
+            # This would be a bug - the fix should ensure neighbor is updated
+            pytest.fail(
+                f"Contracting vertex {shared_edge_vertex} at position {tissue.vertices[shared_edge_vertex]} "
+                f"should have been inserted into cell 2's vertex_indices but wasn't. "
+                f"Cell 2 indices: {list(cell2.vertex_indices)}"
+            )
+
+    # Validate tissue
+    tissue.validate()
+
+
