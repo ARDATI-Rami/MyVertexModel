@@ -1,6 +1,7 @@
 """simulate_cell_growth.py
 
 Simulate growth of one or more cells in a vertex model tissue until they reach double their initial area.
+Optionally, cells can undergo cytokinesis (cell division) when reaching a specified area threshold.
 
 The simulation:
 1. Builds or loads a tissue (honeycomb built on-the-fly by default, or load from file)
@@ -8,6 +9,10 @@ The simulation:
 3. Gradually increases target area of each growing cell from A_initial to 2*A_initial
 4. Allows the tissue to mechanically equilibrate as cells expand
 5. Tracks actual area vs target area for each growing cell
+6. (Optional) When cells reach 2x initial area, initiates cytokinesis:
+   - Inserts contracting vertices perpendicular to the cell's long axis
+   - Applies contractile forces simulating the actomyosin ring
+   - Splits the cell into two daughter cells when sufficiently constricted
 
 Usage Examples:
 --------------
@@ -16,6 +21,10 @@ Single cell (honeycomb):
 
 Multiple cells (honeycomb):
     python examples/simulate_cell_growth.py --growing-cell-ids 3,7,10 --plot
+
+Growth with cytokinesis (cell division when reaching 2x area):
+    python examples/simulate_cell_growth.py --growing-cell-ids 7 --enable-cytokinesis \\
+        --cyto-force-magnitude 50.0 --total-steps 500 --dt 0.005 --plot
 
 Load tissue from file with multiple cells:
     python examples/simulate_cell_growth.py --tissue-file pickled_tissues/acam_79cells.dill \\
@@ -68,6 +77,17 @@ Meshing Options:
     --enable-mesh-dynamic   Enable periodic meshing during simulation.
     --mesh-interval N       Apply meshing every N steps (default: 10).
 
+Cytokinesis (Cell Division) Options:
+    --enable-cytokinesis    Enable cell division when cells reach threshold area.
+    --cyto-division-area-ratio FLOAT
+                            Area ratio to trigger division (default: 2.0 = 2x initial area).
+    --cyto-constriction-threshold FLOAT
+                            Distance threshold for splitting (default: 0.1).
+    --cyto-initial-separation FLOAT
+                            Initial separation of contracting vertices (default: 0.95).
+    --cyto-force-magnitude FLOAT
+                            Contractile force magnitude (default: 10.0).
+
 Other Options:
     --relabel-alpha-mode {direct,order}
                             Relabel cell IDs to alphabetic: 'direct' (1->A) or 'order' (sorted).
@@ -92,6 +112,16 @@ from myvertexmodel.simulation import OverdampedForceBalanceParams
 # Import merge and mesh operations from package (re-exported from mesh_ops.py)
 from myvertexmodel import merge_nearby_vertices, mesh_edges
 from myvertexmodel import relabel_cells_alpha
+# Import cytokinesis functions for cell division
+from myvertexmodel import (
+    CytokinesisParams,
+    compute_division_axis,
+    insert_contracting_vertices,
+    compute_contractile_forces,
+    check_constriction,
+    split_cell,
+    update_global_vertices_from_cells,
+)
 
 # Local helper to save and optionally show Matplotlib figures
 def _save_plot(fig, path: Path, show: bool = True) -> None:
@@ -215,6 +245,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Relabel cells to alphabetic IDs (single-mode argument)
     parser.add_argument("--relabel-alpha-mode", type=str, choices=["direct", "order"], default=None,
                        help="Relabel cell IDs to alphabetic labels: 'direct' converts each numeric ID (1->A), 'order' assigns labels by sorted order (1..N->A..).")
+    # Cytokinesis (cell division) options
+    parser.add_argument("--enable-cytokinesis", action="store_true",
+                       help="Enable cytokinesis: cells divide when reaching 2x initial area.")
+    parser.add_argument("--cyto-constriction-threshold", type=float, default=0.1,
+                       help="Distance threshold for splitting (default: 0.1).")
+    parser.add_argument("--cyto-initial-separation", type=float, default=0.95,
+                       help="Initial separation of contracting vertices as fraction (default: 0.95).")
+    parser.add_argument("--cyto-force-magnitude", type=float, default=10.0,
+                       help="Contractile force magnitude (default: 10.0).")
+    parser.add_argument("--cyto-division-area-ratio", type=float, default=2.0,
+                       help="Area ratio at which to trigger division (default: 2.0, meaning 2x initial area).")
     return parser.parse_args(argv)
 
 
@@ -355,9 +396,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         growth_rate = (A_final - A_initial) / args.growth_steps
         growth_info[cell_id] = {"initial": A_initial, "final": A_final, "rate": growth_rate, "cell": cell}
 
+    # Cytokinesis tracking state
+    cytokinesis_params = None
+    dividing_cells = {}  # cell_id -> {"cell": cell, "initial_area": area, "division_threshold": area * ratio}
+    division_counter = 0  # For generating unique daughter cell IDs
+    cytokinesis_started = False  # Track if any cell has started cytokinesis (for per-step plotting)
+
+    if args.enable_cytokinesis:
+        cytokinesis_params = CytokinesisParams(
+            constriction_threshold=args.cyto_constriction_threshold,
+            initial_separation_fraction=args.cyto_initial_separation,
+            contractile_force_magnitude=args.cyto_force_magnitude,
+        )
+        # Initialize division tracking for each growing cell
+        for cell_id, cell in growing_cells.items():
+            A_initial = initial_areas[cell_id]
+            division_threshold = A_initial * args.cyto_division_area_ratio
+            dividing_cells[cell_id] = {
+                "cell": cell,
+                "initial_area": A_initial,
+                "division_threshold": division_threshold,
+                "division_initiated": False,
+                "contracting_vertices": None,
+            }
+
     print(f"\nGrowth configuration:")
     print(f"  Tissue: {len(tissue.cells)} cells")
     print(f"  Growing cells: {len(growing_cells)}")
+    if args.enable_cytokinesis:
+        print(f"  Cytokinesis: ENABLED (divide at {args.cyto_division_area_ratio}x initial area)")
     for cid, info in growth_info.items():
         print(f"    - {cid}: {info['initial']:.2f} → {info['final']:.2f}")
     print(f"  Growth steps: {args.growth_steps}")
@@ -462,6 +529,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.solver == "gradient_descent":
             # Compute gradient with respect to GLOBAL vertices
             gradient = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
+
+            # Add contractile forces for dividing cells (if cytokinesis enabled)
+            if args.enable_cytokinesis:
+                for cid, div_info in list(dividing_cells.items()):
+                    if div_info["division_initiated"] and div_info["contracting_vertices"] is not None:
+                        cell = div_info["cell"]
+                        try:
+                            cyto_forces = compute_contractile_forces(cell, tissue, cytokinesis_params)
+                            # Apply contractile forces to global vertices
+                            for local_idx, global_idx in enumerate(cell.vertex_indices):
+                                gradient[global_idx] -= cyto_forces[local_idx]  # Subtract because we do -gradient
+                        except (ValueError, IndexError) as e:
+                            pass  # Cell may have been split already
+
             # Update GLOBAL vertices using gradient descent
             tissue.vertices = tissue.vertices - args.dt * args.damping * gradient
             # Reconstruct per-cell vertices from global pool
@@ -471,6 +552,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Forces from energy: F = -∇E (global gradient)
             grad = compute_global_gradient(tissue, energy_params, geometry, epsilon=args.epsilon)
             forces = -grad
+
+            # Add contractile forces for dividing cells (if cytokinesis enabled)
+            if args.enable_cytokinesis:
+                for cid, div_info in list(dividing_cells.items()):
+                    if div_info["division_initiated"] and div_info["contracting_vertices"] is not None:
+                        cell = div_info["cell"]
+                        try:
+                            cyto_forces = compute_contractile_forces(cell, tissue, cytokinesis_params)
+                            # Apply contractile forces to global vertices
+                            for local_idx, global_idx in enumerate(cell.vertex_indices):
+                                forces[global_idx] += cyto_forces[local_idx]
+                        except (ValueError, IndexError) as e:
+                            pass  # Cell may have been split already
+
             # Optional noise term (Gaussian, zero mean)
             if args.ofb_noise and args.ofb_noise > 0.0:
                 noise = np.random.default_rng(args.ofb_seed).normal(loc=0.0, scale=args.ofb_noise, size=forces.shape)
@@ -480,6 +575,83 @@ def main(argv: Optional[List[str]] = None) -> int:
             tissue.vertices = tissue.vertices + (args.dt / max(args.ofb_gamma, 1e-12)) * (forces + noise)
             # Reconstruct per-cell vertices
             tissue.reconstruct_cell_vertices()
+
+        # Cytokinesis: Check if any growing cell has reached division threshold
+        if args.enable_cytokinesis:
+            for cid, div_info in list(dividing_cells.items()):
+                cell = div_info["cell"]
+                current_area = geometry.calculate_area(cell.vertices)
+
+                # Check if cell should start dividing (not yet initiated and reached threshold)
+                if not div_info["division_initiated"] and current_area >= div_info["division_threshold"]:
+                    try:
+                        # Initiate cytokinesis - perpendicular to long axis (axis_angle=None uses PCA)
+                        centroid, axis_dir, perp_dir = compute_division_axis(cell, tissue, axis_angle=None)
+                        v1_idx, v2_idx = insert_contracting_vertices(cell, tissue, axis_angle=None, params=cytokinesis_params)
+                        div_info["division_initiated"] = True
+                        div_info["contracting_vertices"] = (v1_idx, v2_idx)
+                        cytokinesis_started = True  # Mark that cytokinesis has begun
+                        print(f"[cytokinesis] step={step} Cell {cid}: Division initiated (area={current_area:.2f} >= threshold={div_info['division_threshold']:.2f})")
+                        print(f"              Contracting vertices: global indices {v1_idx}, {v2_idx}")
+                    except ValueError as e:
+                        print(f"[cytokinesis] step={step} Cell {cid}: Failed to initiate - {e}")
+
+                # Check if dividing cell should split
+                elif div_info["division_initiated"]:
+                    try:
+                        if check_constriction(cell, tissue, cytokinesis_params):
+                            # Split the cell
+                            division_counter += 1
+                            d1_id = f"{cid}_d1"
+                            d2_id = f"{cid}_d2"
+                            daughter1, daughter2 = split_cell(cell, tissue, daughter1_id=d1_id, daughter2_id=d2_id)
+
+                            print(f"[cytokinesis] step={step} Cell {cid}: SPLIT into {d1_id} and {d2_id}")
+                            d1_area = geometry.calculate_area(daughter1.vertices)
+                            d2_area = geometry.calculate_area(daughter2.vertices)
+                            print(f"              Daughter areas: {d1_id}={d1_area:.2f}, {d2_id}={d2_area:.2f}")
+
+                            # Remove from dividing_cells tracking
+                            del dividing_cells[cid]
+
+                            # Update growing_cells reference if needed
+                            if cid in growing_cells:
+                                del growing_cells[cid]
+
+                            # Update target_areas with new daughter cells
+                            target_areas[d1_id] = d1_area
+                            target_areas[d2_id] = d2_area
+                            initial_areas[d1_id] = d1_area
+                            initial_areas[d2_id] = d2_area
+
+                    except (ValueError, IndexError) as e:
+                        print(f"[cytokinesis] step={step} Cell {cid}: Split check failed - {e}")
+
+        # Per-step plotting during cytokinesis (save each frame without showing)
+        if args.enable_cytokinesis and cytokinesis_started and args.plot:
+            try:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(10, 8))
+                plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
+
+                # Add info about contracting vertices
+                for cid, div_info in dividing_cells.items():
+                    if div_info["division_initiated"] and div_info["contracting_vertices"] is not None:
+                        v1_idx, v2_idx = div_info["contracting_vertices"]
+                        if v1_idx < tissue.vertices.shape[0] and v2_idx < tissue.vertices.shape[0]:
+                            pos1 = tissue.vertices[v1_idx]
+                            pos2 = tissue.vertices[v2_idx]
+                            distance = np.linalg.norm(pos2 - pos1)
+                            # Draw contracting vertices as large red dots
+                            ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], 'r-', linewidth=2, zorder=10)
+                            ax.scatter([pos1[0], pos2[0]], [pos1[1], pos2[1]], c='red', s=100, zorder=11, marker='o')
+                            ax.set_title(f"Step {step}: Cell {cid} dividing (distance={distance:.3f})", fontsize=12, fontweight='bold')
+
+                step_plot_path = sim_folder / f"cytokinesis_step_{step:04d}.png"
+                fig.savefig(step_plot_path, bbox_inches="tight")
+                plt.close(fig)
+            except Exception as e:
+                print(f"[plot] step={step} failed: {e}")
 
         # Periodic vertex merging (optional)
         if args.enable_merge and args.merge_interval > 0 and (step % args.merge_interval == 0):
@@ -527,46 +699,72 @@ def main(argv: Optional[List[str]] = None) -> int:
         cell_progress = {}
         csv_row = [step, sim_time, current_energy]
 
-        for cid, info in growth_info.items():
+        for cid, info in list(growth_info.items()):
             cell = info["cell"]
-            current_area = geometry.calculate_area(cell.vertices)
-            current_target = target_areas[cid]
-            progress = (current_area - info["initial"]) / (info["final"] - info["initial"]) * 100
-            cell_progress[cid] = {"area": current_area, "target": current_target, "progress": progress}
-            csv_row.extend([current_area, current_target, progress])
+            # Check if cell still exists in tissue (may have been split)
+            cell_exists = any(c.id == cell.id for c in tissue.cells)
+            if cell_exists:
+                current_area = geometry.calculate_area(cell.vertices)
+                current_target = target_areas.get(cid, info["final"])
+                progress = (current_area - info["initial"]) / (info["final"] - info["initial"]) * 100
+                cell_progress[cid] = {"area": current_area, "target": current_target, "progress": progress}
+                csv_row.extend([current_area, current_target, progress])
+            else:
+                # Cell was split - mark as complete (100%)
+                cell_progress[cid] = {"area": info["final"], "target": info["final"], "progress": 100.0}
+                csv_row.extend([info["final"], info["final"], 100.0])
 
         csv_data.append(csv_row)
 
         # Log progress
         if step % args.log_interval == 0 or step == args.total_steps - 1:
-            if len(growing_cells) == 1:
-                cid = list(growing_cells.keys())[0]
+            if len(growing_cells) == 1 and len(cell_progress) == 1:
+                cid = list(cell_progress.keys())[0]
                 p = cell_progress[cid]
                 print(f"{step:6d} {sim_time:8.3f} {p['area']:10.2f} {p['target']:10.2f} {p['progress']:7.1f}% {current_energy:12.2f}")
             else:
-                avg_progress = sum(p["progress"] for p in cell_progress.values()) / len(cell_progress)
+                avg_progress = sum(p["progress"] for p in cell_progress.values()) / max(len(cell_progress), 1)
                 print(f"{step:6d} {sim_time:8.3f} {avg_progress:9.1f}% {current_energy:12.2f}")
 
-        # Check stopping criterion (all cells reached target area)
-        all_complete = all(
-            cell_progress[cid]["area"] >= 0.99 * growth_info[cid]["final"]
-            for cid in growing_cells.keys()
-        )
-        if all_complete:
+        # Check stopping criterion (all cells reached target area or were split)
+        all_complete = True
+        for cid in list(growth_info.keys()):
+            if cid in cell_progress:
+                if cell_progress[cid]["progress"] < 99.0:
+                    all_complete = False
+                    break
+
+        # Also stop if all dividing cells have completed (been split)
+        if args.enable_cytokinesis and len(dividing_cells) == 0 and division_counter > 0:
+            print(f"\n✓ All cells have divided at step {step}!")
+            break
+
+        if all_complete and not args.enable_cytokinesis:
             print(f"\n✓ Growth complete at step {step}! All cells reached target area.")
             break
     
     # Final statistics
     print(f"\nFinal statistics:")
-    print(f"  Growing cells: {len(growing_cells)}")
+    print(f"  Initial growing cells: {len(growth_info)}")
+    print(f"  Final tissue cells: {len(tissue.cells)}")
+
+    if args.enable_cytokinesis:
+        print(f"  Division events: {division_counter}")
+
     all_reached = True
     for cid, info in growth_info.items():
-        final_area = geometry.calculate_area(info["cell"].vertices)
-        ratio = final_area / info["initial"]
-        reached = final_area >= 0.99 * info["final"]
-        all_reached = all_reached and reached
-        print(f"    - {cid}: {final_area:.2f} ({ratio:.2f}× initial) {'✓' if reached else '✗'}")
-    print(f"  All targets reached: {all_reached}")
+        cell = info["cell"]
+        # Check if cell still exists (may have been split)
+        cell_exists = any(c.id == cell.id for c in tissue.cells)
+        if cell_exists:
+            final_area = geometry.calculate_area(cell.vertices)
+            ratio = final_area / info["initial"]
+            reached = final_area >= 0.99 * info["final"]
+            all_reached = all_reached and reached
+            print(f"    - {cid}: {final_area:.2f} ({ratio:.2f}× initial) {'✓' if reached else '✗'}")
+        else:
+            print(f"    - {cid}: DIVIDED into daughter cells")
+
     print(f"  Final energy: {sim.total_energy():.2f}")
     print(f"  Total simulation time: {sim_time:.3f}")
 
@@ -576,8 +774,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 8))
             plot_tissue(tissue, ax=ax, show_vertices=True, fill=True, alpha=1, show_cell_ids=True, show_neighbor_counts=False)
-            cell_ids_display = ", ".join(str(c) for c in growing_cells.keys())
-            ax.set_title(f"Final Tissue (Growing cells: {cell_ids_display})", fontsize=12, fontweight='bold')
+
+            # Build title showing original growing cells and any daughters
+            if args.enable_cytokinesis and division_counter > 0:
+                ax.set_title(f"Final Tissue ({len(tissue.cells)} cells, {division_counter} divisions)", fontsize=12, fontweight='bold')
+            else:
+                cell_ids_display = ", ".join(str(c) for c in growth_info.keys())
+                ax.set_title(f"Final Tissue (Growing cells: {cell_ids_display})", fontsize=12, fontweight='bold')
+
             final_plot_path = sim_folder / "growth_final.png"
             _save_plot(fig, final_plot_path, show=True)
             print(f"\nSaved final tissue plot to {final_plot_path}")
