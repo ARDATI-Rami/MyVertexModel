@@ -80,13 +80,16 @@ Meshing Options:
 Cytokinesis (Cell Division) Options:
     --enable-cytokinesis    Enable cell division when cells reach threshold area.
     --cyto-division-area-ratio FLOAT
-                            Area ratio to trigger division (default: 2.0 = 2x initial area).
+                            Area ratio to trigger division initiation (default: 2.0 = 2x initial area).
+    --cyto-constriction-percentage FLOAT
+                            Percentage of bounding box diagonal for split threshold (default: 10.0%).
+                            Cell splits when contracting vertices are closer than this % of bbox diagonal.
     --cyto-constriction-threshold FLOAT
-                            Distance threshold for splitting (default: 0.1).
+                            Absolute distance threshold for splitting (overrides percentage if set).
     --cyto-initial-separation FLOAT
                             Initial separation of contracting vertices (default: 0.95).
     --cyto-force-magnitude FLOAT
-                            Contractile force magnitude (default: 10.0).
+                            Contractile force magnitude (default: 10.0, use ~150000 for ACAM tissue).
 
 Other Options:
     --relabel-alpha-mode {direct,order}
@@ -247,15 +250,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                        help="Relabel cell IDs to alphabetic labels: 'direct' converts each numeric ID (1->A), 'order' assigns labels by sorted order (1..N->A..).")
     # Cytokinesis (cell division) options
     parser.add_argument("--enable-cytokinesis", action="store_true",
-                       help="Enable cytokinesis: cells divide when reaching 2x initial area.")
-    parser.add_argument("--cyto-constriction-threshold", type=float, default=0.1,
-                       help="Distance threshold for splitting (default: 0.1).")
+                       help="Enable cytokinesis: cells divide when reaching specified area ratio.")
+    parser.add_argument("--cyto-constriction-threshold", type=float, default=None,
+                       help="Absolute distance threshold for splitting (default: None, use percentage instead).")
+    parser.add_argument("--cyto-constriction-percentage", type=float, default=10.0,
+                       help="Percentage of bounding box diagonal for split threshold (default: 10.0%%). "
+                            "When contracting vertices are closer than this %% of bbox diagonal, cell splits.")
     parser.add_argument("--cyto-initial-separation", type=float, default=0.95,
                        help="Initial separation of contracting vertices as fraction (default: 0.95).")
     parser.add_argument("--cyto-force-magnitude", type=float, default=10.0,
                        help="Contractile force magnitude (default: 10.0).")
     parser.add_argument("--cyto-division-area-ratio", type=float, default=2.0,
-                       help="Area ratio at which to trigger division (default: 2.0, meaning 2x initial area).")
+                       help="Area ratio at which to trigger division initiation (default: 2.0, meaning 2x initial area).")
     return parser.parse_args(argv)
 
 
@@ -404,7 +410,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.enable_cytokinesis:
         cytokinesis_params = CytokinesisParams(
-            constriction_threshold=args.cyto_constriction_threshold,
+            constriction_threshold=args.cyto_constriction_threshold if args.cyto_constriction_threshold is not None else 0.1,
+            constriction_percentage=args.cyto_constriction_percentage if args.cyto_constriction_threshold is None else None,
             initial_separation_fraction=args.cyto_initial_separation,
             contractile_force_magnitude=args.cyto_force_magnitude,
         )
@@ -600,11 +607,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 elif div_info["division_initiated"]:
                     try:
                         if check_constriction(cell, tissue, cytokinesis_params):
-                            # Split the cell
+                            # Split the cell (let split_cell auto-generate appropriate IDs)
                             division_counter += 1
-                            d1_id = f"{cid}_d1"
-                            d2_id = f"{cid}_d2"
-                            daughter1, daughter2 = split_cell(cell, tissue, daughter1_id=d1_id, daughter2_id=d2_id)
+                            daughter1, daughter2 = split_cell(cell, tissue)
+
+                            # Get the actual IDs from the daughter cells
+                            d1_id = daughter1.id
+                            d2_id = daughter2.id
 
                             print(f"[cytokinesis] step={step} Cell {cid}: SPLIT into {d1_id} and {d2_id}")
                             d1_area = geometry.calculate_area(daughter1.vertices)
