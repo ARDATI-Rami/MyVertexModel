@@ -20,8 +20,14 @@ class CytokinesisParams:
     """Parameters for cytokinesis process.
     
     Attributes:
-        constriction_threshold: Distance between contracting vertices below which
+        constriction_threshold: Absolute distance between contracting vertices below which
             the cell is considered sufficiently constricted to divide (default: 0.1).
+            Only used if constriction_percentage is None.
+        constriction_percentage: Percentage of cell's bounding box diagonal below which
+            the cell is considered sufficiently constricted to divide (default: None).
+            If set (e.g., 10.0 for 10%), the actual threshold is computed as:
+            threshold = constriction_percentage / 100 * bounding_box_diagonal
+            Takes precedence over constriction_threshold if not None.
         initial_separation_fraction: Initial separation of contracting vertices as
             fraction of division axis length (default: 0.95, meaning they start
             at 95% of the full width).
@@ -29,6 +35,7 @@ class CytokinesisParams:
             contracting vertices to simulate actomyosin ring (default: 10.0).
     """
     constriction_threshold: float = 0.1
+    constriction_percentage: Optional[float] = None  # e.g., 10.0 means 10% of bounding box
     initial_separation_fraction: float = 0.95
     contractile_force_magnitude: float = 10.0
 
@@ -426,6 +433,12 @@ def check_constriction(
 ) -> bool:
     """Check if a dividing cell is sufficiently constricted.
     
+    The constriction threshold can be specified in two ways:
+    1. Absolute: Using params.constriction_threshold (a fixed distance)
+    2. Relative: Using params.constriction_percentage (percentage of bounding box diagonal)
+
+    If constriction_percentage is set, it takes precedence over constriction_threshold.
+
     Args:
         cell: Cell undergoing division.
         tissue: Tissue containing the cell.
@@ -448,7 +461,26 @@ def check_constriction(
     
     distance = np.linalg.norm(pos2 - pos1)
     
-    return distance <= params.constriction_threshold
+    # Compute threshold based on params
+    if params.constriction_percentage is not None:
+        # Use percentage of bounding box diagonal
+        # Get cell vertices
+        if cell.vertex_indices.shape[0] > 0 and tissue.vertices.shape[0] > 0:
+            vertices = tissue.vertices[cell.vertex_indices]
+        else:
+            vertices = cell.vertices
+
+        # Compute bounding box diagonal
+        min_coords = vertices.min(axis=0)
+        max_coords = vertices.max(axis=0)
+        bbox_diagonal = np.linalg.norm(max_coords - min_coords)
+
+        threshold = (params.constriction_percentage / 100.0) * bbox_diagonal
+    else:
+        # Use absolute threshold
+        threshold = params.constriction_threshold
+
+    return distance <= threshold
 
 
 def split_cell(
@@ -510,12 +542,18 @@ def split_cell(
         indices[:v1_local + 1]
     ])
     
-    # Create daughter cells
-    if daughter1_id is None:
-        daughter1_id = f"{cell.id}_d1"
-    if daughter2_id is None:
-        daughter2_id = f"{cell.id}_d2"
-    
+    # Create daughter cells with appropriate naming convention
+    # If mother cell ID is alphabetic: add "1" and "2" (e.g., "A" -> "A1", "A2")
+    # If mother cell ID is numeric: add "d1" and "d2" (e.g., 7 -> "7_d1", "7_d2")
+    if daughter1_id is None or daughter2_id is None:
+        cell_id_str = str(cell.id)
+        is_alpha = cell_id_str.isalpha()
+
+        if daughter1_id is None:
+            daughter1_id = f"{cell.id}1" if is_alpha else f"{cell.id}_d1"
+        if daughter2_id is None:
+            daughter2_id = f"{cell.id}2" if is_alpha else f"{cell.id}_d2"
+
     daughter1 = Cell(
         cell_id=daughter1_id,
         vertex_indices=daughter1_indices
