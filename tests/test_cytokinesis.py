@@ -393,9 +393,26 @@ def test_split_cell_auto_ids():
     
     daughter1, daughter2 = split_cell(cell, tissue)
     
-    # IDs should be auto-generated
+    # Numeric IDs should get "_d1" and "_d2" suffix
     assert daughter1.id == "1_d1"
     assert daughter2.id == "1_d2"
+
+
+def test_split_cell_auto_ids_alphabetic():
+    """Test that split_cell generates IDs with 1/2 suffix for alphabetic mother cell."""
+    vertices = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    cell = Cell(cell_id="A", vertices=vertices)
+    tissue = Tissue()
+    tissue.add_cell(cell)
+    tissue.build_global_vertices()
+
+    insert_contracting_vertices(cell, tissue)
+
+    daughter1, daughter2 = split_cell(cell, tissue)
+
+    # Alphabetic IDs should get "1" and "2" suffix (e.g., A -> A1, A2)
+    assert daughter1.id == "A1"
+    assert daughter2.id == "A2"
 
 
 def test_compute_division_axis_error_on_small_cell():
