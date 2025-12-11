@@ -140,27 +140,23 @@ python examples/simulate_cell_growth.py \
 
 ### ACAM Tissue Conversion
 
-Convert ACAM center-based model to vertex model:
+Convert ACAM center-based model to vertex model (midpoint-adhesion method only):
 
 ```bash
-# Convert with topology awareness and validation
-python scripts/convert_acam_tissue.py \
-  --acam-file acam_tissues/80_cells \
-  --neighbor-json acam_tissues/acam_79_neighbors.json \
-  --merge-radius 14.0 \
-  --output-prefix acam_79cells \
-  --validate-connectivity
+# Convert ACAM to vertex model using the supported pipeline
+python scripts/tissue_acam_to_vertex.py --acam-file acam_tissues/20_cells_adhesion --output pickled_tissues/vertex_20cells.dill
 ```
 
-**Important**: Always validate and repair ACAM tissues after conversion:
+**Note:** Only the midpoint-adhesion pipeline in `scripts/tissue_acam_to_vertex.py` is supported for ACAM→vertex conversion. All previous neighbor-based and tangent-based methods are deprecated and moved to `deprecated/` for reference.
+
+**Important:** Always validate and repair ACAM tissues after conversion:
 
 ```bash
 # Validate structure
 pytest tests/test_tissue_cell_by_cell.py -v
 
 # Repair if needed (removes duplicate consecutive vertices)
-python examples/diagnose_tissue.py pickled_tissues/acam_79cells.dill \
-  --repair --save-repaired pickled_tissues/acam_79cells_repaired.dill
+python examples/diagnose_tissue.py pickled_tissues/vertex_20cells.dill --repair --save-repaired pickled_tissues/vertex_20cells_repaired.dill
 ```
 
 ### Tissue Validation
