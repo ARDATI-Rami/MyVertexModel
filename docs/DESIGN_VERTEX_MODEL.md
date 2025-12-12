@@ -40,7 +40,7 @@ The codebase is organized into focused modules for maintainability:
 | `geometry.py` | `GeometryCalculator`, polygon utilities | ~150 |
 | `simulation.py` | `Simulation` class, gradient computation | ~390 |
 | `builders.py` | Tissue builders (honeycomb, grid) | ~240 |
-| `acam_importer.py` | ACAM tissue conversion | ~910 |
+| `acam_importer.py` | Legacy ACAM tissue conversion utilities (kept for reference) | ~910 |
 | `io.py` | Save/load utilities | ~100 |
 | `plotting.py` | Visualization utilities | ~185 |
 
@@ -105,7 +105,7 @@ Where:
 - Global vertex pool: `build_global_vertices()` and `reconstruct_cell_vertices()` fully operational - in `core.py`
 - Tissue builders: `build_grid_tissue()`, `build_honeycomb_2_3_4_3_2()`, `build_honeycomb_3_4_5_4_3()` - in `builders.py`
 - **Cytokinesis**: Complete cell division with contracting vertices, active forces, and topological splitting - in `cytokinesis.py`
-- ACAM importer: `convert_acam_with_topology()` with neighbor topology awareness - in `acam_importer.py`
+- ACAM conversion: Midpoint-adhesion pipeline implemented in `scripts/tissue_acam_to_vertex.py` (uses adhesions, PCA-based polylines, endpoint clustering, and edge refinement)
 - Validation: `validate()` method, polygon validity checks, CCW ordering enforcement - in `core.py` and `geometry.py`
 
 **Key Implementation Notes:**
@@ -195,4 +195,3 @@ python examples/simulate_cell_growth.py \
 
 ## 10. Summary
 The design centers on a shared global vertex representation enabling physically consistent multi-cell interactions, a modular energy functional capturing key biophysical terms, and an extensible pathway toward dynamic remodeling (topology changes). Current code establishes interfaces; next steps focus on migrating geometry and implementing real energy + forces.
-
