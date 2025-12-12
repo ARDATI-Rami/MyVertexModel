@@ -4,10 +4,11 @@ Simulation engine for vertex model dynamics.
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional, Literal, Callable, Dict, Any
+from typing import Optional, Literal, Callable, Dict, Any, Sequence, Union
 from .core import Tissue, Cell
 from .energy import EnergyParameters, tissue_energy
 from .geometry import GeometryCalculator
+from .apoptosis import ApoptosisParameters, ApoptosisState, update_apoptosis_targets, collect_cells_to_remove, build_apoptosis_target_area_mapping
 
 
 @dataclass
@@ -225,6 +226,8 @@ class Simulation:
         damping: float = 1.0,
         solver_type: Literal["gradient_descent", "overdamped_force_balance"] = "gradient_descent",
         ofb_params: Optional[OverdampedForceBalanceParams] = None,
+        apoptosis_params: Optional[ApoptosisParameters] = None,
+        apoptotic_cell_ids: Optional[Sequence[Union[int, str]]] = None,
     ):
         """Initialize a simulation.
 
@@ -241,6 +244,8 @@ class Simulation:
             ofb_params: Parameters for the overdamped force-balance solver. Required if
                 solver_type is "overdamped_force_balance". If None and solver_type is
                 "overdamped_force_balance", default OverdampedForceBalanceParams will be used.
+            apoptosis_params: Optional parameters for apoptosis dynamics.
+            apoptotic_cell_ids: Optional sequence of initial apoptotic cell IDs (integers or strings).
         """
         self.tissue = tissue if tissue is not None else Tissue()
         self.dt = dt
@@ -264,6 +269,17 @@ class Simulation:
             self.ofb_params = ofb_params  # Store even if not used, for introspection
             self._rng = None
 
+        # Apoptosis configuration/state
+        self.apoptosis_params = apoptosis_params
+        self.apoptosis_state: Optional[ApoptosisState] = None
+        if apoptosis_params is not None and apoptotic_cell_ids is not None:
+            self.apoptosis_state = ApoptosisState()
+            self.apoptosis_state.register_cells(self.tissue, apoptotic_cell_ids, geometry=self.geometry)
+            # Mark cells for convenience
+            for cell in self.tissue.cells:
+                if cell.id in self.apoptosis_state.apoptotic_cells:
+                    cell.is_apoptotic = True
+
     def step(self):
         """Perform a single simulation step.
 
@@ -279,6 +295,26 @@ class Simulation:
         if self.validate_each_step:
             self.tissue.validate()
 
+        # Update apoptosis target areas before computing forces
+        if self.apoptosis_params is not None and self.apoptosis_state is not None:
+            update_apoptosis_targets(
+                self.tissue,
+                self.apoptosis_state,
+                self.apoptosis_params,
+                step_index=int(self.time / self.dt) if self.dt > 0 else 0,
+                dt=self.dt,
+                geometry=self.geometry,
+            )
+            # Build per-cell target area mapping and inject into energy parameters
+            mapping = build_apoptosis_target_area_mapping(self.apoptosis_state)
+            # Combine with existing target_area if it is a dict
+            if isinstance(self.energy_params.target_area, dict):
+                combined = dict(self.energy_params.target_area)
+                combined.update(mapping)
+                self.energy_params.target_area = combined
+            else:
+                self.energy_params.target_area = mapping
+
         if self.solver_type == "gradient_descent":
             self._step_gradient_descent()
         elif self.solver_type == "overdamped_force_balance":
@@ -288,6 +324,14 @@ class Simulation:
 
         # Advance time after position updates
         self.time += self.dt
+
+        # After position updates, check for apoptotic cells to remove
+        if self.apoptosis_params is not None and self.apoptosis_state is not None:
+            to_remove = collect_cells_to_remove(self.tissue, self.apoptosis_state, self.apoptosis_params, geometry=self.geometry)
+            if to_remove:
+                self.tissue.remove_cells(to_remove)
+                for cid in to_remove:
+                    self.apoptosis_state.completed_cells.add(cid)
 
         # Validate after position updates if requested
         if self.validate_each_step:
