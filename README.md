@@ -34,7 +34,7 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
 ### Tissue Building & Import
 - **Honeycomb builders**: 14-cell (2-3-4-3-2) and 19-cell (3-4-5-4-3) patterns
 - **Grid builder**: Rectangular tissue lattices
-- **ACAM importer**: Topology-aware conversion with neighbor connectivity (`convert_acam_with_topology()`)
+- **ACAM tissue conversion**: Midpoint-adhesion pipeline implemented in `scripts/tissue_acam_to_vertex.py` (uses adhesions, PCA-based polylines, endpoint clustering, and edge refinement)
 - **Automatic global vertex pool** construction with tolerance-based merging
 
 ### Simulation & Analysis
@@ -147,7 +147,7 @@ Convert ACAM center-based model to vertex model (midpoint-adhesion method only):
 python scripts/tissue_acam_to_vertex.py --acam-file acam_tissues/20_cells_adhesion --output pickled_tissues/vertex_20cells.dill
 ```
 
-**Note:** Only the midpoint-adhesion pipeline in `scripts/tissue_acam_to_vertex.py` is supported for ACAM→vertex conversion. All previous neighbor-based and tangent-based methods are deprecated and moved to `deprecated/` for reference.
+**Note:** Only the midpoint-adhesion pipeline in `scripts/tissue_acam_to_vertex.py` is supported for ACAM→vertex conversion.
 
 **Important:** Always validate and repair ACAM tissues after conversion:
 
@@ -371,7 +371,6 @@ src/myvertexmodel/                 # Core package modules
 ├── simulation.py                  # Simulation engine
 ├── plotting.py                    # Visualization (enhanced with ID labels)
 ├── builders.py                    # Tissue builders (honeycomb, grid)
-├── acam_importer.py               # ACAM tissue conversion
 └── io.py                          # Save/load utilities
 
 examples/                          # Example scripts
@@ -380,7 +379,6 @@ examples/                          # Example scripts
 ├── diagnose_acam_simulation.py    # ACAM parameter diagnostic
 ├── plot_acam_79cells_labeled.py   # Visualization with labels
 ├── plot_problem_cells_detail.py   # Detailed cell inspection
-├── convert_acam_example.py        # ACAM conversion example
 └── ...                            # Additional examples
 
 tests/                             # Pytest suite
@@ -389,16 +387,17 @@ tests/                             # Pytest suite
 └── test_tissue_cell_by_cell.py    # Comprehensive cell-by-cell validation
 
 docs/                              # Documentation
-├── design_vertex_model.md         # Technical design document
+├── DESIGN_VERTEX_MODEL.md         # Technical design document
 ├── ACAM_CONVERSION_GUIDE.md       # ACAM conversion guide
 └── ...                            # Additional documentation
 
 scripts/                           # Utility scripts
-└── convert_acam_tissue.py         # ACAM conversion CLI tool
+└── tissue_acam_to_vertex.py       # Main ACAM→vertex conversion CLI tool (midpoint-adhesion pipeline)
 
 pickled_tissues/                   # Pre-built tissue files (.dill)
 acam_tissues/                      # ACAM source data
 Sim_*/                             # Simulation output folders (gitignored)
+
 ```
 
 ## Future Development
