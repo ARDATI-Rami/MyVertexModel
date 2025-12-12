@@ -91,15 +91,19 @@ Cytokinesis (Cell Division) Options:
     --cyto-force-magnitude FLOAT
                             Contractile force magnitude (default: 10.0, use ~150000 for ACAM tissue).
 
-Other Options:
-    --relabel-alpha-mode {direct,order}
-                            Relabel cell IDs to alphabetic: 'direct' (1->A) or 'order' (sorted).
-
-Output:
-    Creates a simulation folder (Sim_<tissue>_<cells>_<timestamp>_<random>/) containing:
-    - growth_initial.png    Initial tissue visualization (if --plot)
-    - growth_final.png      Final tissue visualization (if --plot)
-    - growth_tracking.csv   Per-step tracking data for all growing cells
+Apoptosis Options:
+    --apoptotic-cell-ids IDS
+                            Comma-separated cell IDs to undergo apoptosis (e.g., '5' or 'I,AW').
+    --apoptosis-shrink-rate FLOAT
+                            Fractional shrink rate per unit time (default: 0.5).
+    --apoptosis-min-area-fraction FLOAT
+                            Minimum area fraction used as a floor for the apoptotic target area (default: 0.05).
+    --apoptosis-removal-area-fraction FLOAT
+                            Fraction of initial area below which apoptotic cells are removed (default: 0.1; set 0 to disable).
+    --apoptosis-removal-area-absolute FLOAT
+                            Absolute area threshold below which apoptotic cells are removed (default: 0.0; set 0 to disable).
+    --apoptosis-start-step INT
+                            Step index at which apoptosis starts (default: 0).
 """
 from __future__ import annotations
 import argparse
@@ -124,6 +128,13 @@ from myvertexmodel import (
     check_constriction,
     split_cell,
     update_global_vertices_from_cells,
+)
+from myvertexmodel.apoptosis import (
+    ApoptosisParameters,
+    ApoptosisState,
+    update_apoptosis_targets,
+    collect_cells_to_remove,
+    build_apoptosis_target_area_mapping,
 )
 
 # Local helper to save and optionally show Matplotlib figures
@@ -216,7 +227,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--growth-steps", type=int, default=100, help="Steps to ramp up target area.")
     parser.add_argument("--total-steps", type=int, default=200, help="Total simulation steps.")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size.")
-    parser.add_argument("--plot", action="store_true", help="Show initial and final tissue plots.")
+    parser.add_argument("--plot", action="store_true", help="Show and save initial and final tissue plots.")
     parser.add_argument("--log-interval", type=int, default=10, help="Log progress every N steps.")
     parser.add_argument("--save-csv", type=str, default=None, help="Save tracking data to CSV file.")
     # Energy parameters
@@ -262,6 +273,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                        help="Contractile force magnitude (default: 10.0).")
     parser.add_argument("--cyto-division-area-ratio", type=float, default=2.0,
                        help="Area ratio at which to trigger division initiation (default: 2.0, meaning 2x initial area).")
+    # Apoptosis options
+    parser.add_argument("--apoptotic-cell-ids", type=str, default=None,
+                       help="Comma-separated cell IDs to undergo apoptosis (e.g., '5' or 'I,AW').")
+    parser.add_argument("--apoptosis-shrink-rate", type=float, default=0.5,
+                       help="Fractional shrink rate per unit time for apoptotic cells.")
+    parser.add_argument("--apoptosis-min-area-fraction", type=float, default=0.05,
+                       help="Floor for apoptotic target area as a fraction of initial area (A_target >= frac*A0).")
+    parser.add_argument("--apoptosis-removal-area-fraction", type=float, default=0.1,
+                       help="Remove apoptotic cells when area < frac*A0 (set 0 to disable).")
+    parser.add_argument("--apoptosis-removal-area-absolute", type=float, default=0.0,
+                       help="Remove apoptotic cells when area < absolute threshold (set 0 to disable).")
+    parser.add_argument("--apoptosis-start-step", type=int, default=0,
+                       help="Step index at which apoptosis starts.")
     return parser.parse_args(argv)
 
 
@@ -301,7 +325,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         cell_ids_str = args.growing_cell_ids
 
-    # Parse comma-separated cell IDs
+    # Allow empty or whitespace-only growing-cell-ids to mean "no growth"
+    if cell_ids_str is None:
+        cell_ids_str = ""
+
+    # Parse comma-separated cell IDs (may be empty)
     growing_cell_id_list = [cid.strip() for cid in cell_ids_str.split(",") if cid.strip()]
 
     # Determine tissue identifier for folder naming
@@ -330,7 +358,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             tissue_identifier = "honeycomb19"
 
     # Create unique simulation folder
-    sim_folder = create_simulation_folder(tissue_identifier, growing_cell_id_list)
+    sim_folder = create_simulation_folder(tissue_identifier, growing_cell_id_list or ["no_growth"])
     print(f"\nSimulation folder created: {sim_folder}")
 
     # Build global vertex pool
@@ -351,7 +379,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     geometry = GeometryCalculator()
 
-    # Find growing cells by ID - helper function
+    # Helper to find cell by ID
     def find_cell_by_id(provided_id: str):
         for cell in tissue.cells:
             if str(cell.id) == provided_id:
@@ -369,7 +397,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
         return None
 
-    # Find all growing cells
+    # Find all growing cells (may be empty)
     growing_cells = {}
     not_found = []
     for cid in growing_cell_id_list:
@@ -380,21 +408,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             not_found.append(cid)
 
     if not_found:
-        print(f"\nError: Cell(s) not found: {not_found}")
+        print(f"\nWarning: Growing cell(s) not found and will be ignored: {not_found}")
         print(f"Available cell IDs: {sorted([str(c.id) for c in tissue.cells])}")
-        return 1
 
+    # No longer treat "no growing cells" as fatal; allow apoptosis-only runs
     if not growing_cells:
-        print("\nError: No growing cells specified!")
-        return 1
-
-    print(f"\nFound {len(growing_cells)} growing cell(s): {list(growing_cells.keys())}")
+        print("\nNo growing cells specified: running without growth (apoptosis and/or cytokinesis only).")
 
     # Compute initial areas for all cells
     initial_areas = {cell.id: geometry.calculate_area(cell.vertices) for cell in tissue.cells}
     target_areas = initial_areas.copy()
 
-    # Define growth targets for each growing cell
+    # Define growth targets only for growing cells
     growth_info = {}
     for cell_id, cell in growing_cells.items():
         A_initial = initial_areas[cell_id]
@@ -427,69 +452,78 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "contracting_vertices": None,
             }
 
+    # Parse apoptotic cell IDs (if any)
+    apoptotic_cell_ids: Optional[List[str]] = None
+    if args.apoptotic_cell_ids:
+        apoptotic_cell_ids = [cid.strip() for cid in args.apoptotic_cell_ids.split(",") if cid.strip()]
+
+    # DEBUG: show available cell IDs and parsed apoptotic IDs
+    print("Available cell IDs:", [str(c.id) for c in tissue.cells])
+    print("Requested apoptotic IDs:", apoptotic_cell_ids)
+
     print(f"\nGrowth configuration:")
     print(f"  Tissue: {len(tissue.cells)} cells")
     print(f"  Growing cells: {len(growing_cells)}")
     if args.enable_cytokinesis:
         print(f"  Cytokinesis: ENABLED (divide at {args.cyto_division_area_ratio}x initial area)")
+    if apoptotic_cell_ids:
+        print(f"  Apoptosis: ENABLED (shrink rate={args.apoptosis_shrink_rate}, min area fraction={args.apoptosis_min_area_fraction})")
     for cid, info in growth_info.items():
         print(f"    - {cid}: {info['initial']:.2f} → {info['final']:.2f}")
     print(f"  Growth steps: {args.growth_steps}")
     print(f"  Total steps: {args.total_steps}")
     print(f"  Time step dt: {args.dt}")
 
+    if apoptotic_cell_ids:
+        print("  Apoptotic cells:", ", ".join(str(c) for c in apoptotic_cell_ids))
+
     # Create energy parameters with per-cell target areas
     energy_params = EnergyParameters(
         k_area=args.k_area,
         k_perimeter=args.k_perimeter,
         gamma=args.gamma,
-        target_area=target_areas  # dict instead of float
+        target_area=target_areas,
     )
 
-    # Optional meshing at the beginning (after energy_params are defined)
-    if args.mesh_mode and args.mesh_mode != "none":
-        try:
-            mstats = mesh_edges(
-                tissue,
-                mode=args.mesh_mode,
-                length_scale=args.mesh_length_scale,
-                energy_tol=1e-10,
-                geometry_tol=1e-10,
-                energy_params=energy_params,
-            )
-            print(
-                f"[mesh] mode={mstats['mode']} edges_subdivided={mstats['edges_subdivided']} "
-                f"verts {mstats['vertices_before']} -> {mstats['vertices_after']} "
-                f"dE={mstats['energy_change']:.2e} dA_max={mstats['max_area_change']:.2e} dP_max={mstats['max_perimeter_change']:.2e}"
-            )
-        except ValueError as e:
-            print(f"[mesh] skipped: {e}")
-
-    # Create simulation
+    # Set up solver-specific parameters
     if args.solver == "overdamped_force_balance":
         ofb_params = OverdampedForceBalanceParams(
             gamma=args.ofb_gamma,
             noise_strength=args.ofb_noise,
             random_seed=args.ofb_seed,
         )
-        sim = Simulation(
-            tissue=tissue,
-            dt=args.dt,
-            energy_params=energy_params,
-            epsilon=args.epsilon,
-            damping=args.damping,  # not used in OFB solver
-            solver_type="overdamped_force_balance",
-            ofb_params=ofb_params,
-        )
     else:
-        sim = Simulation(
-            tissue=tissue,
-            dt=args.dt,
-            energy_params=energy_params,
-            epsilon=args.epsilon,
-            damping=args.damping,
-            solver_type="gradient_descent",
+        ofb_params = None
+
+    # Apoptosis parameters (if any apoptotic cells specified)
+    if apoptotic_cell_ids:
+        apoptosis_params = ApoptosisParameters(
+            shrink_rate=args.apoptosis_shrink_rate,
+            min_area_fraction=args.apoptosis_min_area_fraction,
+            removal_area_fraction=args.apoptosis_removal_area_fraction,
+            removal_area_absolute=args.apoptosis_removal_area_absolute,
+            start_step=args.apoptosis_start_step,
         )
+        apoptosis_state = ApoptosisState()
+        apoptosis_state.register_cells(tissue, apoptotic_cell_ids, geometry=geometry)
+    else:
+        apoptosis_params = None
+        apoptosis_state = None
+
+    # Create simulation (used only for energy evaluation and convenience)
+    sim = Simulation(
+        tissue=tissue,
+        dt=args.dt,
+        energy_params=energy_params,
+        validate_each_step=False,
+        epsilon=args.epsilon,
+        damping=args.damping,
+        solver_type=args.solver,
+        ofb_params=ofb_params,
+        # Do NOT pass apoptosis here; we handle it explicitly in this script
+        apoptosis_params=None,
+        apoptotic_cell_ids=None,
+    )
 
     # Show initial tissue
     if args.plot:
@@ -515,23 +549,48 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Simulation loop
     print("\nStarting simulation...\n")
-    # Build dynamic header based on number of cells
     if len(growing_cells) == 1:
         print(f"{'Step':>6} {'Time':>8} {'Area':>10} {'Target':>10} {'Progress':>8} {'Energy':>12}")
         print("-" * 65)
-    else:
+    elif len(growing_cells) > 1:
         print(f"{'Step':>6} {'Time':>8} {'AvgProgress':>10} {'Energy':>12}")
         print("-" * 45)
+    else:
+        # No growth: log only step, time, energy, and apoptotic areas if any
+        print(f"{'Step':>6} {'Time':>8} {'Energy':>12}  ApoptoticAreas")
+        print("-" * 80)
 
     sim_time = 0.0
 
     for step in range(args.total_steps):
-        # Update target areas for all growing cells (linear ramp during growth phase)
-        for cid, info in growth_info.items():
-            if step < args.growth_steps:
-                target_areas[cid] = info["initial"] + step * info["rate"]
-            else:
-                target_areas[cid] = info["final"]
+        # Update target areas only if we have growing cells
+        if growth_info:
+            for cid, info in growth_info.items():
+                if step < args.growth_steps:
+                    target_areas[cid] = info["initial"] + step * info["rate"]
+                else:
+                    target_areas[cid] = info["final"]
+
+        # Apoptosis: update per-cell target areas and override target_areas
+        apoptotic_areas = {}
+        if apoptosis_state is not None and apoptosis_params is not None:
+            update_apoptosis_targets(
+                tissue,
+                apoptosis_state,
+                apoptosis_params,
+                step_index=step,
+                dt=args.dt,
+                geometry=geometry,
+            )
+            for cid, A_target in build_apoptosis_target_area_mapping(apoptosis_state).items():
+                target_areas[cid] = A_target
+                # Track current geometric area for logging
+                cell = find_cell_by_id(str(cid))
+                if cell is not None:
+                    apoptotic_areas[cid] = geometry.calculate_area(cell.vertices)
+
+        # Ensure energy_params sees the updated per-cell targets
+        energy_params.target_area = target_areas
 
         if args.solver == "gradient_descent":
             # Compute gradient with respect to GLOBAL vertices
@@ -636,6 +695,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     except (ValueError, IndexError) as e:
                         print(f"[cytokinesis] step={step} Cell {cid}: Split check failed - {e}")
 
+        # Apoptosis: Update state of apoptotic cells (if any)
+        # REMOVE old inline apoptosis block here (now handled by Simulation via apoptosis module)
+        # Previously:
+        # if apoptotic_cell_ids and step >= args.apoptosis_start_step:
+        #     for cid in apoptotic_cell_ids:
+        #         ... manual new_target_area and initial_areas[cid] access ...
+
         # Per-step plotting during cytokinesis (save each frame without showing)
         if args.enable_cytokinesis and cytokinesis_started and args.plot:
             try:
@@ -700,28 +766,49 @@ def main(argv: Optional[List[str]] = None) -> int:
             except ValueError as e:
                 print(f"[mesh] step={step} skipped: {e}")
 
+        # Apoptosis removal: actually delete cells that are small enough
+        if apoptosis_state is not None and apoptosis_params is not None:
+            to_remove = collect_cells_to_remove(
+                tissue,
+                apoptosis_state,
+                apoptosis_params,
+                geometry=geometry,
+            )
+            if to_remove:
+                print(f"[apoptosis] step={step} removing cells: {to_remove}")
+                tissue.remove_cells(to_remove)
+                # Rebuild global vertices and per-cell vertices after topology change
+                tissue.build_global_vertices(tol=1e-10)
+                tissue.reconstruct_cell_vertices()
+                # Drop their target areas
+                for cid in to_remove:
+                    target_areas.pop(cid, None)
+                # Update energy_params mapping
+                energy_params.target_area = target_areas
+
         # Advance time
         sim_time += args.dt
 
-        # Get current state for all growing cells
         current_energy = sim.total_energy()
         cell_progress = {}
         csv_row = [step, sim_time, current_energy]
 
-        for cid, info in list(growth_info.items()):
-            cell = info["cell"]
-            # Check if cell still exists in tissue (may have been split)
-            cell_exists = any(c.id == cell.id for c in tissue.cells)
-            if cell_exists:
-                current_area = geometry.calculate_area(cell.vertices)
-                current_target = target_areas.get(cid, info["final"])
-                progress = (current_area - info["initial"]) / (info["final"] - info["initial"]) * 100
-                cell_progress[cid] = {"area": current_area, "target": current_target, "progress": progress}
-                csv_row.extend([current_area, current_target, progress])
-            else:
-                # Cell was split - mark as complete (100%)
-                cell_progress[cid] = {"area": info["final"], "target": info["final"], "progress": 100.0}
-                csv_row.extend([info["final"], info["final"], 100.0])
+        # Get current state for all growing cells
+        if growth_info:
+            for cid, info in list(growth_info.items()):
+                cell = info["cell"]
+                # Check if cell still exists in tissue (may have been split)
+                cell_exists = any(c.id == cell.id for c in tissue.cells)
+                if cell_exists:
+                    current_area = geometry.calculate_area(cell.vertices)
+                    current_target = target_areas.get(cid, info["final"])
+                    progress = (current_area - info["initial"]) / (info["final"] - info["initial"]) * 100
+                    cell_progress[cid] = {"area": current_area, "target": current_target, "progress": progress}
+                    csv_row.extend([current_area, current_target, progress])
+                else:
+                    # Cell was split - mark as complete (100%)
+                    cell_progress[cid] = {"area": info["final"], "target": info["final"], "progress": 100.0}
+                    csv_row.extend([info["final"], info["final"], 100.0])
 
         csv_data.append(csv_row)
 
@@ -731,27 +818,38 @@ def main(argv: Optional[List[str]] = None) -> int:
                 cid = list(cell_progress.keys())[0]
                 p = cell_progress[cid]
                 print(f"{step:6d} {sim_time:8.3f} {p['area']:10.2f} {p['target']:10.2f} {p['progress']:7.1f}% {current_energy:12.2f}")
-            else:
+            elif len(growing_cells) > 1 and cell_progress:
                 avg_progress = sum(p["progress"] for p in cell_progress.values()) / max(len(cell_progress), 1)
                 print(f"{step:6d} {sim_time:8.3f} {avg_progress:9.1f}% {current_energy:12.2f}")
+            else:
+                # No growth: just log step, time, energy and apoptotic areas
+                if apoptotic_areas:
+                    ap_str = ", ".join(
+                        f"{cid} A={apoptotic_areas[cid]:.4f} T={target_areas.get(cid, float('nan')):.4f}"
+                        for cid in sorted(apoptotic_areas.keys(), key=str)
+                    )
+                else:
+                    ap_str = "(no apoptotic cells found this step)"
+                print(f"{step:6d} {sim_time:8.3f} {current_energy:12.2f}  {ap_str}")
 
         # Check stopping criterion (all cells reached target area or were split)
         all_complete = True
-        for cid in list(growth_info.keys()):
-            if cid in cell_progress:
-                if cell_progress[cid]["progress"] < 99.0:
-                    all_complete = False
-                    break
+        if growth_info:
+            for cid in list(growth_info.keys()):
+                if cid in cell_progress:
+                    if cell_progress[cid]["progress"] < 99.0:
+                        all_complete = False
+                        break
 
         # Also stop if all dividing cells have completed (been split)
         if args.enable_cytokinesis and len(dividing_cells) == 0 and division_counter > 0:
             print(f"\n✓ All cells have divided at step {step}!")
             break
 
-        if all_complete and not args.enable_cytokinesis:
+        if growth_info and all_complete and not args.enable_cytokinesis:
             print(f"\n✓ Growth complete at step {step}! All cells reached target area.")
             break
-    
+
     # Final statistics
     print(f"\nFinal statistics:")
     print(f"  Initial growing cells: {len(growth_info)}")
@@ -760,19 +858,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.enable_cytokinesis:
         print(f"  Division events: {division_counter}")
 
-    all_reached = True
-    for cid, info in growth_info.items():
-        cell = info["cell"]
-        # Check if cell still exists (may have been split)
-        cell_exists = any(c.id == cell.id for c in tissue.cells)
-        if cell_exists:
-            final_area = geometry.calculate_area(cell.vertices)
-            ratio = final_area / info["initial"]
-            reached = final_area >= 0.99 * info["final"]
-            all_reached = all_reached and reached
-            print(f"    - {cid}: {final_area:.2f} ({ratio:.2f}× initial) {'✓' if reached else '✗'}")
-        else:
-            print(f"    - {cid}: DIVIDED into daughter cells")
+    if growth_info:
+        all_reached = True
+        for cid, info in growth_info.items():
+            cell = info["cell"]
+            # Check if cell still exists (may have been split)
+            cell_exists = any(c.id == cell.id for c in tissue.cells)
+            if cell_exists:
+                final_area = geometry.calculate_area(cell.vertices)
+                ratio = final_area / info["initial"]
+                reached = final_area >= 0.99 * info["final"]
+                all_reached = all_reached and reached
+                print(f"    - {cid}: {final_area:.2f} ({ratio:.2f}× initial) {'✓' if reached else '✗'}")
+            else:
+                print(f"    - {cid}: DIVIDED into daughter cells")
 
     print(f"  Final energy: {sim.total_energy():.2f}")
     print(f"  Total simulation time: {sim_time:.3f}")
@@ -796,7 +895,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"\nSaved final tissue plot to {final_plot_path}")
         except Exception as e:
             print(f"Final plot failed: {e}")
-    
+
     # Save CSV (always save now)
     try:
         with open(csv_path, "w") as f:
