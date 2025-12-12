@@ -66,6 +66,9 @@ class Cell:
                 raise ValueError(f"vertex_indices must be a 1D array of ints, got shape {vi.shape}")
             self.vertex_indices = vi
 
+        # Apoptosis flag (metadata only; logic handled by apoptosis module / simulation)
+        self.is_apoptotic: bool = False
+
     def __repr__(self):
         return f"Cell(id={self.id}, n_vertices={len(self.vertices)})"
 
@@ -324,3 +327,12 @@ class Tissue:
                         continue
                     indices.append(idx)
                 cell.vertex_indices = np.array(indices, dtype=int)
+
+    def remove_cells(self, cell_ids: Union[List[Union[int, str]], Dict[Union[int, str], None]]):
+        """Remove cells with the given IDs from the tissue.
+
+        Args:
+            cell_ids: Iterable of cell IDs to remove.
+        """
+        ids_set = set(cell_ids)
+        self.cells = [cell for cell in self.cells if cell.id not in ids_set]
