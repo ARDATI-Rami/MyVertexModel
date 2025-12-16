@@ -18,8 +18,8 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
 ### Core Implementation
 - **Cell & Tissue data structures** with dual representation (local vertices + global vertex pool)
 - **Global vertex pool** with `build_global_vertices()` and `reconstruct_cell_vertices()` methods
-- **Energy functional**: E = ½k_area(A-A₀)² + ½k_perimeter·P² + γ·P
-- **Gradient computation**: Central finite differences + analytical gradient implementation
+- **Energy functional**: $E = \tfrac{1}{2} k_{\text{area}} (A - A_0)^2 + \tfrac{1}{2} k_{\text{perimeter}} P^2 + \gamma\, P$
+- **Gradient computation**: Analytical gradient $\nabla E$ implemented; central finite differences used for verification
 - **Simulation engine**: Configurable timestep, damping, and epsilon parameters
 - **Validation suite**: Polygon validity, CCW ordering, duplicate vertex detection
 
@@ -332,7 +332,7 @@ See `docs/design_vertex_model.md` for technical details:
 
 - **Implemented features**: Global vertex pool, energy functional, simulation engine
 - **Data structures**: Dual representation (local + global vertices), Cell.vertex_indices
-- **Energy formula**: E = ½k_area(A-A₀)² + ½k_perimeter·P² + γ·P
+- **Energy formula**: $E = \frac{1}{2}k_{\text{area}}(A-A_0)^2 + \frac{1}{2}k_{\text{perimeter}}\cdot P^2 + \gamma\cdot P$
 - **Gradient computation**: Finite differences + analytical implementation
 - **Future extensions**: Topological transitions (T1, division), adaptive timestep
 
