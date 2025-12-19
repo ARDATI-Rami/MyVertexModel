@@ -69,6 +69,57 @@ A 2D epithelial vertex model implementation for simulating tissue mechanics. It 
   - Tissue comparison capability
   - **Automated repair** for duplicate vertices and CCW violations
   - Visualization of connectivity issues
+## Installation
+
+You can work with this project using **uv** (fastest), **pip/venv**, or **conda**. Each method installs the same dependencies defined in `pyproject.toml`.
+
+### Option A — uv (fastest and reproducible)
+
+Install uv once and let it handle environments and dependency resolution:
+
+```bash
+# Install uv (one‑time, via pipx or pip)
+pipx install uv  # or: pip install --user uv
+
+# Create a virtual environment and sync dependencies
+uv venv          # creates .venv in the current directory
+uv sync          # installs dependencies from pyproject.toml
+
+# Activate and run your code
+source .venv/bin/activate
+uv run python -m myvertexmodel  # adjust entrypoint as needed
+```
+
+`uv sync` resolves and installs the packages declared in your `pyproject.toml` and lock file.
+
+### Option B — pip + venv (standard)
+
+Use standard Python tooling:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+This creates a local virtual environment (`.venv`) and installs your package in editable mode along with the optional `dev` extras.
+
+### Option C — conda (base environment + pip)
+
+If you prefer conda for Python itself or compiled dependencies, keep the `environment.yml` minimal and install Python packages via pip:
+
+```bash
+conda env create -f environment.yml
+conda activate myvertexmodel
+
+# Upgrade pip and install the project
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+This pattern ensures conda provides Python and any heavy system libraries, while the actual Python packages come from `pyproject.toml`, so all three workflows stay in sync.
+
 
 ## Quick Start
 
