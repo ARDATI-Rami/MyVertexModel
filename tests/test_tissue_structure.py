@@ -609,6 +609,32 @@ def test_simulation_readiness_acam():
         traceback.print_exc()
 
 
+def test_honeycomb_builders_create_global_vertex_pool_by_default():
+    from myvertexmodel import build_honeycomb_2_3_4_3_2, build_honeycomb_3_4_5_4_3
+
+    t14 = build_honeycomb_2_3_4_3_2()
+    assert t14.vertices.shape[0] > 0
+    for cell in t14.cells:
+        assert cell.vertex_indices.shape[0] == cell.vertices.shape[0]
+        assert np.all((cell.vertex_indices >= 0) & (cell.vertex_indices < t14.vertices.shape[0]))
+
+    t19 = build_honeycomb_3_4_5_4_3()
+    assert t19.vertices.shape[0] > 0
+    for cell in t19.cells:
+        assert cell.vertex_indices.shape[0] == cell.vertices.shape[0]
+        assert np.all((cell.vertex_indices >= 0) & (cell.vertex_indices < t19.vertices.shape[0]))
+
+
+def test_honeycomb_builders_can_skip_global_vertex_pool():
+    from myvertexmodel import build_honeycomb_2_3_4_3_2
+
+    t = build_honeycomb_2_3_4_3_2(build_global=False)
+    assert t.vertices.shape == (0, 2)
+    for cell in t.cells:
+        # Raw builders set local vertices, but should not have global indices
+        assert cell.vertex_indices.shape == (0,)
+
+
 if __name__ == "__main__":
     # Run tests directly
     print("Running tissue structure validation tests...\n")
@@ -618,4 +644,5 @@ if __name__ == "__main__":
     test_compare_honeycomb_vs_acam()
     test_simulation_readiness_honeycomb()
     test_simulation_readiness_acam()
-
+    test_honeycomb_builders_create_global_vertex_pool_by_default()
+    test_honeycomb_builders_can_skip_global_vertex_pool()
