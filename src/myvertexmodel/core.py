@@ -3,13 +3,15 @@ Core data structures for vertex model.
 """
 
 import numpy as np
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Set, Sequence
 
 # Import for type hints; avoid heavy usage until implementation proceeds
 try:
     from .geometry import GeometryCalculator  # type: ignore
 except Exception:  # pragma: no cover - safe fallback for partial environments
     GeometryCalculator = object  # type: ignore
+
+CellID = Union[int, str]
 
 
 class Cell:
@@ -92,72 +94,76 @@ class Tissue:
         """Add a cell to the tissue."""
         self.cells.append(cell)
 
-    def cell_neighbor_counts(self) -> Dict[int, int]:
-        """Return the number of neighbors for each cell.
+    def cell_neighbors(self) -> Dict[CellID, List[CellID]]:
+        """
+        Return the neighbor IDs for each cell.
 
         Two cells are considered neighbors if they share at least one polygon edge.
         The method prefers the global vertex representation via ``cell.vertex_indices``
         when available; otherwise it falls back to comparing local ``cell.vertices``
         coordinates with a tolerance.
 
-        Returns:
-            Dict[int, int]: Mapping from cell.id to number of distinct neighboring cells.
+        :return: Mapping from ``cell.id`` to a list of neighbor cell IDs.
+        :rtype: Dict[CellID, List[CellID]]
         """
-        # Prefer global vertex indices when available for robustness
-        use_global = any(cell.vertex_indices.shape[0] > 0 for cell in self.cells)
+        # Prefer global vertex indices when available for robustness.
+        use_global = any(
+            hasattr(cell, "vertex_indices")
+            and cell.vertex_indices is not None
+            and len(cell.vertex_indices) > 0
+            for cell in self.cells
+        )
 
-        # Build per-cell edge sets represented as unordered vertex index pairs
-        cell_edges: Dict[int, set] = {}
+        # Build per-cell edge sets represented as unordered vertex-index pairs.
+        cell_edges: Dict[CellID, Set[tuple[int, int]]] = {}
 
-        if use_global and self.vertices.shape[0] > 0:
+        if use_global and getattr(self, "vertices", None) is not None and len(self.vertices) > 0:
             for cell in self.cells:
                 idx = cell.vertex_indices
-                if idx.shape[0] < 2:
+                if idx is None or len(idx) < 2:
                     cell_edges[cell.id] = set()
                     continue
-                # Close the polygon
-                edges = set()
-                for i in range(len(idx)):
+
+                edges: Set[tuple[int, int]] = set()
+                n = len(idx)
+                for i in range(n):
                     a = int(idx[i])
-                    b = int(idx[(i + 1) % len(idx)])
+                    b = int(idx[(i + 1) % n])  # close polygon
                     if a == b:
                         continue
-                    if a < b:
-                        edges.add((a, b))
-                    else:
-                        edges.add((b, a))
+                    edges.add((a, b) if a < b else (b, a))
+
                 cell_edges[cell.id] = edges
         else:
-            # Fallback: build a temporary global pool based on coordinates with a tight tolerance
-            # This avoids double-implementing the globalisation logic
-            # Reuse build_global_vertices non-destructively by working on a shallow copy
+            # Fallback: build a temporary global pool based on coordinates with a tight tolerance.
+            # This avoids re-implementing the globalisation logic.
             tmp = Tissue()
             for c in self.cells:
                 tmp.add_cell(Cell(cell_id=c.id, vertices=c.vertices.copy()))
             tmp.build_global_vertices(tol=1e-10)
+
             for cell in tmp.cells:
                 idx = cell.vertex_indices
-                if idx.shape[0] < 2:
+                if idx is None or len(idx) < 2:
                     cell_edges[cell.id] = set()
                     continue
-                edges = set()
-                for i in range(len(idx)):
+
+                edges: Set[tuple[int, int]] = set()
+                n = len(idx)
+                for i in range(n):
                     a = int(idx[i])
-                    b = int(idx[(i + 1) % len(idx)])
+                    b = int(idx[(i + 1) % n])  # close polygon
                     if a == b:
                         continue
-                    if a < b:
-                        edges.add((a, b))
-                    else:
-                        edges.add((b, a))
+                    edges.add((a, b) if a < b else (b, a))
+
                 cell_edges[cell.id] = edges
 
-        # Build neighbor sets by shared edges
-        neighbors: Dict[int, set] = {cell.id: set() for cell in self.cells}
-        cell_ids = [cell.id for cell in self.cells]
-        id_to_idx = {cid: i for i, cid in enumerate(cell_ids)}
+        # Build neighbor sets by shared edges.
+        neighbors: Dict[CellID, Set[CellID]] = {cell.id: set() for cell in self.cells}
+        cell_ids: List[CellID] = [cell.id for cell in self.cells]
 
-        # Compare edges of every pair of cells; typical cell count is modest so O(N^2) is acceptable
+        # Compare edges of every pair of cells; O(N^2) is acceptable at typical tissue sizes.
         for i, ci in enumerate(cell_ids):
             edges_i = cell_edges.get(ci, set())
             if not edges_i:
@@ -167,11 +173,23 @@ class Tissue:
                 edges_j = cell_edges.get(cj, set())
                 if not edges_j:
                     continue
-                if edges_i.intersection(edges_j):
+                if edges_i & edges_j:
                     neighbors[ci].add(cj)
                     neighbors[cj].add(ci)
 
-        return {cid: len(nbrs) for cid, nbrs in neighbors.items()}
+        # Keep return type stable: List[CellID] (no int coercion).
+        return {cid: sorted(nbrs, key=str) for cid, nbrs in neighbors.items()}
+
+    def cell_neighbor_counts(self) -> Dict[CellID, int]:
+        """
+        Return the number of neighbors for each cell.
+
+        Two cells are considered neighbors if they share at least one polygon edge.
+
+        :return: Mapping from ``cell.id`` to the number of distinct neighboring cells.
+        :rtype: Dict[CellID, int]
+        """
+        return {cid: len(nbrs) for cid, nbrs in self.cell_neighbors().items()}
 
     def __repr__(self):
         return f"Tissue(n_cells={len(self.cells)})"
@@ -293,6 +311,41 @@ class Tissue:
             else:
                 cell.vertex_indices = np.empty((0,), dtype=int)
 
+    def ensure_global_vertices(self, tol: float = 1e-10, rebuild: bool = False) -> None:
+        """Ensure the tissue has a coherent global vertex pool.
+
+        This is a safe, idempotent wrapper around:
+        - build_global_vertices()
+        - reconstruct_cell_vertices()
+
+        It is intended to be called by builder utilities (e.g., honeycomb builders)
+        so they return a mechanically coupled tissue by default.
+
+        Args:
+            tol: Tolerance for considering vertices identical (passed to build_global_vertices).
+            rebuild: If True, forces rebuilding the global pool even if it appears present.
+
+        Notes:
+            A global pool is considered "present" when:
+            - tissue.vertices is non-empty AND
+            - every cell either has empty geometry, or has vertex_indices of the same
+              length as its local vertices.
+        """
+        if not rebuild:
+            if self.vertices.shape[0] > 0:
+                ok = True
+                for cell in self.cells:
+                    if cell.vertices.shape[0] == 0:
+                        continue
+                    if cell.vertex_indices.shape[0] != cell.vertices.shape[0]:
+                        ok = False
+                        break
+                if ok:
+                    return
+
+        self.build_global_vertices(tol=tol)
+        self.reconstruct_cell_vertices()
+
     def reconstruct_cell_vertices(self) -> None:
         """
         Reconstruct cell.vertices from global vertex pool.
@@ -336,3 +389,166 @@ class Tissue:
         """
         ids_set = set(cell_ids)
         self.cells = [cell for cell in self.cells if cell.id not in ids_set]
+
+    def compute_vertex_degrees(self, tol: float = 1e-10) -> Dict[int, int]:
+        """Compute the degree (number of incident cells) for each global vertex.
+
+        For each global vertex index in tissue.vertices, counts how many cells
+        reference that vertex in their vertex_indices array.
+
+        Args:
+            tol: Tolerance for considering vertices identical (unused in current implementation,
+                 but kept for API consistency with other methods).
+
+        Returns:
+            Dictionary mapping global vertex index to its degree (number of cells sharing it).
+
+        Notes:
+            - Requires tissue to have global vertex representation (vertex_indices populated).
+            - A vertex not referenced by any cell will not appear in the returned dict.
+            - Typical degrees: 2 (edge), 3 (tri-vertex), 4+ (multi-vertex junction).
+        """
+        vertex_degrees: Dict[int, int] = {}
+
+        for cell in self.cells:
+            if cell.vertex_indices.shape[0] == 0:
+                continue
+            for idx in cell.vertex_indices:
+                idx = int(idx)
+                vertex_degrees[idx] = vertex_degrees.get(idx, 0) + 1
+
+        return vertex_degrees
+
+    def find_shared_vertices_between_cells(
+        self,
+        cell_id1: CellID,
+        cell_id2: CellID,
+        tol: float = 1e-10
+    ) -> List[int]:
+        """Find which global vertex indices are shared between two specific cells.
+
+        Args:
+            cell_id1: ID of first cell.
+            cell_id2: ID of second cell.
+            tol: Tolerance for considering vertices identical (used for fallback coordinate comparison).
+
+        Returns:
+            List of global vertex indices that appear in both cells' vertex_indices arrays.
+            Returns empty list if cells don't share vertices or if either cell is not found.
+
+        Notes:
+            - Prefers global vertex_indices when available for exact matching.
+            - Falls back to coordinate comparison if global representation not available.
+        """
+        # Find the two cells
+        cell1 = next((c for c in self.cells if c.id == cell_id1), None)
+        cell2 = next((c for c in self.cells if c.id == cell_id2), None)
+
+        if cell1 is None or cell2 is None:
+            return []
+
+        # If using global vertex indices, compute intersection
+        if (cell1.vertex_indices.shape[0] > 0 and cell2.vertex_indices.shape[0] > 0 and
+            self.vertices.shape[0] > 0):
+            shared = set(cell1.vertex_indices) & set(cell2.vertex_indices)
+            return sorted(shared)
+
+        # Fallback: compare coordinates with tolerance
+        shared_indices = []
+        if cell1.vertices.shape[0] > 0 and cell2.vertices.shape[0] > 0:
+            for i, v1 in enumerate(cell1.vertices):
+                for j, v2 in enumerate(cell2.vertices):
+                    if np.linalg.norm(v1 - v2) < tol:
+                        # This is a shared vertex; try to find its global index
+                        if self.vertices.shape[0] > 0:
+                            diffs = np.linalg.norm(self.vertices - v1, axis=1)
+                            idx = int(np.argmin(diffs))
+                            if diffs[idx] < tol and idx not in shared_indices:
+                                shared_indices.append(idx)
+                        break
+
+        return sorted(shared_indices)
+
+    def get_cells_sharing_vertices_with(
+        self,
+        cell_id: CellID,
+        tol: float = 1e-10
+    ) -> Dict[CellID, List[int]]:
+        """Get all neighbors of a cell and their specific shared vertex indices.
+
+        For a given cell, finds all neighboring cells (those sharing at least one vertex)
+        and returns which specific global vertex indices they share.
+
+        Args:
+            cell_id: ID of the cell to find neighbors for.
+            tol: Tolerance for considering vertices identical.
+
+        Returns:
+            Dictionary mapping neighbor cell IDs to lists of shared global vertex indices.
+            Only includes neighbors that share at least one vertex.
+
+        Notes:
+            - This is more detailed than cell_neighbors() which only returns neighbor IDs.
+            - Useful for topological operations that need to know exact shared vertices.
+        """
+        neighbors_shared: Dict[CellID, List[int]] = {}
+
+        target_cell = next((c for c in self.cells if c.id == cell_id), None)
+        if target_cell is None:
+            return neighbors_shared
+
+        for other_cell in self.cells:
+            if other_cell.id == cell_id:
+                continue
+
+            shared = self.find_shared_vertices_between_cells(cell_id, other_cell.id, tol=tol)
+            if shared:
+                neighbors_shared[other_cell.id] = shared
+
+        return neighbors_shared
+
+    def move_shared_vertices_toward_point(
+        self,
+        vertex_indices: Sequence[int],
+        target_point: np.ndarray,
+        move_fraction: float = 1.0
+    ) -> None:
+        """Move specified global vertices toward a target point.
+
+        Updates the global vertex pool (tissue.vertices) by moving the specified
+        vertices toward a target point (typically the centroid of a removed cell).
+
+        Args:
+            vertex_indices: List of global vertex indices to move.
+            target_point: Target coordinates (2D array or list) to move vertices toward.
+            move_fraction: How far to move (0.0 = no move, 1.0 = all the way to target).
+                          Values > 1.0 will overshoot. Default: 1.0.
+
+        Notes:
+            - Directly modifies tissue.vertices in place.
+            - After calling this, you should call reconstruct_cell_vertices() to update
+              cell-local vertex arrays.
+            - move_fraction allows gradual merging if needed for stability.
+
+        Raises:
+            ValueError: If move_fraction is negative.
+        """
+        if move_fraction < 0:
+            raise ValueError(f"move_fraction must be >= 0, got {move_fraction}")
+
+        if self.vertices.shape[0] == 0:
+            return
+
+        target_point = np.asarray(target_point, dtype=float).flatten()[:2]
+
+        for idx in vertex_indices:
+            idx = int(idx)
+            if idx < 0 or idx >= self.vertices.shape[0]:
+                continue
+
+            # Compute displacement vector
+            displacement = target_point - self.vertices[idx]
+
+            # Move vertex
+            self.vertices[idx] += move_fraction * displacement
+
