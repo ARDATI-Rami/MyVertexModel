@@ -1,9 +1,15 @@
 """Tissue builder utilities.
 
 Provides pure functions that construct common tissue layouts without performing
-any simulation steps. Builders return a populated `Tissue` whose per–cell local
-vertices are set; callers may optionally invoke `tissue.build_global_vertices()`
-to construct a shared global vertex pool for mechanical coupling.
+any simulation steps.
+
+Builder geometry contracts:
+- Honeycomb builders (``build_honeycomb_*``) return tissues with a *shared global
+  vertex pool built by default*, so adjacent cells are mechanically coupled out
+  of the box.
+- Grid builder (``build_grid_tissue``) returns independent local polygons; call
+  ``tissue.ensure_global_vertices()`` (or ``build_global_vertices`` +
+  ``reconstruct_cell_vertices``) if you want global coupling.
 
 Design principles:
 - Deterministic: repeated calls with same parameters yield identical geometry.
@@ -20,7 +26,6 @@ boundary conditions, or loading from external geometry specs.
 """
 from __future__ import annotations
 import numpy as np
-from typing import Tuple, Optional
 from .core import Tissue, Cell
 
 __all__ = [
@@ -62,7 +67,7 @@ def build_grid_tissue(nx: int, ny: int, cell_size: float = 1.0) -> Tissue:
     return tissue
 
 
-def build_honeycomb_2_3_4_3_2(hex_size: float = 1.0) -> Tissue:
+def build_honeycomb_2_3_4_3_2(hex_size: float = 1.0, *, build_global: bool = True, tol: float = 1e-10) -> Tissue:
     """Construct a 14-cell honeycomb tissue with 5 staggered rows (2–3–4–3–2 pattern).
 
     Hexagons are pointy-top oriented: a vertex points toward +y direction.
@@ -76,6 +81,9 @@ def build_honeycomb_2_3_4_3_2(hex_size: float = 1.0) -> Tissue:
 
     Args:
         hex_size: Distance from center to each vertex (circumradius) of hexagon.
+        build_global: If True (default), also build a shared global vertex pool so
+            adjacent cells are mechanically coupled out of the box.
+        tol: Tolerance used when building the global vertex pool.
 
     Returns:
         Tissue populated with 14 regular hexagonal cells.
@@ -120,10 +128,14 @@ def build_honeycomb_2_3_4_3_2(hex_size: float = 1.0) -> Tissue:
         cx, cy = centers[cid]
         verts = hexagon_vertices(cx, cy, hex_size)
         tissue.add_cell(Cell(cell_id=cid, vertices=verts))
+
+    if build_global:
+        tissue.ensure_global_vertices(tol=tol)
+
     return tissue
 
 
-def build_honeycomb_3_4_5_4_3(hex_size: float = 1.0) -> Tissue:
+def build_honeycomb_3_4_5_4_3(hex_size: float = 1.0, *, build_global: bool = True, tol: float = 1e-10) -> Tissue:
     """Construct a 19-cell honeycomb tissue with 5 staggered rows (3–4–5–4–3 pattern).
 
     This represents two complete rings around a central hexagon:
@@ -143,6 +155,9 @@ def build_honeycomb_3_4_5_4_3(hex_size: float = 1.0) -> Tissue:
 
     Args:
         hex_size: Distance from center to each vertex (circumradius) of hexagon.
+        build_global: If True (default), also build a shared global vertex pool so
+            adjacent cells are mechanically coupled out of the box.
+        tol: Tolerance used when building the global vertex pool.
 
     Returns:
         Tissue populated with 19 regular hexagonal cells.
@@ -196,6 +211,10 @@ def build_honeycomb_3_4_5_4_3(hex_size: float = 1.0) -> Tissue:
         cx, cy = centers[cid]
         verts = hexagon_vertices(cx, cy, hex_size)
         tissue.add_cell(Cell(cell_id=cid, vertices=verts))
+
+    if build_global:
+        tissue.ensure_global_vertices(tol=tol)
+
     return tissue
 
 
