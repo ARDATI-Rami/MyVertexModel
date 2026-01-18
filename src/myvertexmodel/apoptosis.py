@@ -9,7 +9,7 @@ vertex merging and validation to collapse and remove cells.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
+from typing import Dict, Iterable, List, Optional, Set, Union
 
 import numpy as np
 
@@ -26,6 +26,7 @@ class ApoptosisParameters:
 
     Attributes:
         shrink_rate: Fraction of initial area lost per unit time (per step * dt).
+            Controls the exponential decay of target area: A_target(t) = A0 * exp(-shrink_rate * t).
         min_area_fraction: Minimum fraction of initial area used as a *floor* for
             the apoptotic target area (i.e., the target will not shrink below
             min_area_fraction * A0).
@@ -36,6 +37,7 @@ class ApoptosisParameters:
         min_vertices: Minimum number of vertices; if a cell falls below this,
             it is considered for removal.
         start_step: Optional global step index at which apoptosis starts.
+        removal_strategy: Strategy for removing apoptotic cells (e.g. 'shrink', 'merge', 'purse_string', 't2_collapse', 'weighted_merge', 're_tessellate').
     """
 
     shrink_rate: float = 0.5
@@ -44,6 +46,7 @@ class ApoptosisParameters:
     removal_area_absolute: float = 0.0
     min_vertices: int = 3
     start_step: int = 0
+    removal_strategy: str = 'shrink'
 
 
 @dataclass
@@ -206,3 +209,5 @@ def build_apoptosis_target_area_mapping(state: ApoptosisState) -> Dict[CellId, f
     Non-apoptotic cells are not included and should use the global target area.
     """
     return dict(state.current_target_areas)
+
+
