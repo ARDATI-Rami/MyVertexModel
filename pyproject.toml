@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib",
     "scipy",
     "dill",
+    "ipykernel>=6.31.0",
 ]
 
 [project.optional-dependencies]
@@ -20,4 +21,9 @@ dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
 
